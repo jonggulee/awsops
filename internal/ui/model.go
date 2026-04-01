@@ -32,6 +32,25 @@ type vpcsLoadedMsg struct {
 	errs    []error
 }
 
+type tgwLoadedMsg struct {
+	gateways     []awsclient.TransitGateway
+	attachments  []awsclient.TGWAttachment
+	routeTables  []awsclient.TGWRouteTable
+	routes       []awsclient.TGWRoute
+	associations []awsclient.TGWAssociation
+	errs         []error
+}
+
+type accountIDsLoadedMsg struct {
+	profileToAccount map[string]string
+	accountToProfile map[string]string
+}
+
+type routeTablesLoadedMsg struct {
+	tables []awsclient.VPCRouteTable
+	errs   []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -49,14 +68,16 @@ const (
 	viewSG
 	viewVPC
 	viewSubnet
+	viewTGW
 )
 
 type screen int
 
 const (
-	screenTable  screen = iota
-	screenDetail        // d 눌렀을 때 상세 화면
-	screenRegion        // R 눌렀을 때 리전 선택 화면
+	screenTable        screen = iota
+	screenDetail              // d 눌렀을 때 상세 화면
+	screenRegion              // R 눌렀을 때 리전 선택 화면
+	screenConnectivity        // c 눌렀을 때 연결 체크 화면
 )
 
 var viewNames = map[viewType]string{
@@ -64,6 +85,7 @@ var viewNames = map[viewType]string{
 	viewSG:     "sg",
 	viewVPC:    "vpc",
 	viewSubnet: "subnet",
+	viewTGW:    "tgw",
 }
 
 // --- sort ---
@@ -85,6 +107,11 @@ const (
 	sortCidr
 	sortAZ
 	sortRegion
+	sortTgwID
+	sortAttachmentID
+	sortResourceID
+	sortOwnerID
+	sortResourceType
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -99,6 +126,9 @@ var vpcSortCols = []sortCol{sortProfile, sortName, sortVpcID, sortCidr, sortStat
 // Subnet: 1=Profile 2=Name 3=SubnetID 4=VpcID 5=CIDR 6=AZ 7=Region
 var subnetSortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortVpcID, sortCidr, sortAZ, sortRegion}
 
+// TGW:    1=Profile 2=TgwID 3=AttachmentID 4=Type 5=ResourceID 6=Owner 7=TgwOwner 8=State 9=Region
+var tgwSortCols = []sortCol{sortProfile, sortTgwID, sortAttachmentID, sortResourceType, sortResourceID, sortOwnerID, sortOwnerID, sortState, sortRegion}
+
 var sortColNames = map[sortCol]string{
 	sortProfile:    "Profile",
 	sortName:       "Name",
@@ -110,9 +140,14 @@ var sortColNames = map[sortCol]string{
 	sortGroupID:    "Group ID",
 	sortVpcID:      "VPC ID",
 	sortSubnetID:   "Subnet ID",
-	sortCidr:       "CIDR",
-	sortAZ:         "AZ",
-	sortRegion:     "Region",
+	sortCidr:         "CIDR",
+	sortAZ:           "AZ",
+	sortRegion:       "Region",
+	sortTgwID:        "TGW ID",
+	sortAttachmentID: "Attachment ID",
+	sortResourceID:   "Resource ID",
+	sortOwnerID:      "Owner",
+	sortResourceType: "Type",
 }
 
 // --- model ---
@@ -129,11 +164,23 @@ type Model struct {
 	selectedVPC    *awsclient.VPC
 	selectedSubnet *awsclient.Subnet
 	filters        []string
-	instances      []awsclient.Instance
-	groups         []awsclient.SecurityGroup
-	vpcs           []awsclient.VPC
-	subnets        []awsclient.Subnet
-	fetchErr       []error
+	instances        []awsclient.Instance
+	groups           []awsclient.SecurityGroup
+	vpcs             []awsclient.VPC
+	subnets          []awsclient.Subnet
+	tgws             []awsclient.TransitGateway
+	tgwAttachments   []awsclient.TGWAttachment
+	tgwRouteTables   []awsclient.TGWRouteTable
+	tgwRoutes        []awsclient.TGWRoute
+	tgwAssociations  []awsclient.TGWAssociation
+	selectedTGWAtt      *awsclient.TGWAttachment
+	connectivitySrcVPC  *awsclient.VPC
+	connectivityResult  *awsclient.ConnectivityResult
+	connectivityCursor  int
+	routeTables         []awsclient.VPCRouteTable
+	profileToAccount    map[string]string // profile → accountID
+	accountToProfile    map[string]string // accountID → profile
+	fetchErr         []error
 	loading        bool
 	width          int
 	height         int
@@ -141,6 +188,7 @@ type Model struct {
 	regionCursor   int
 	sortBy         sortCol
 	sortAsc        bool
+	detailScroll   int
 }
 
 func New() Model {
@@ -163,7 +211,16 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchInstances(), fetchSecurityGroups(), fetchVPCsWithRegions([]string{awsclient.DefaultRegion}))
+	regions := []string{awsclient.DefaultRegion}
+	return tea.Batch(
+		m.spinner.Tick,
+		fetchInstances(),
+		fetchSecurityGroups(),
+		fetchVPCsWithRegions(regions),
+		fetchTGWsWithRegions(regions),
+		fetchRouteTablesWithRegions(regions),
+		fetchAccountIDs(),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -204,6 +261,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.table = m.buildCurrentTable()
 		}
 
+	case tgwLoadedMsg:
+		m.tgws = msg.gateways
+		m.tgwAttachments = msg.attachments
+		m.tgwRouteTables = msg.routeTables
+		m.tgwRoutes = msg.routes
+		m.tgwAssociations = msg.associations
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case routeTablesLoadedMsg:
+		m.routeTables = msg.tables
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+
+	case accountIDsLoadedMsg:
+		m.profileToAccount = msg.profileToAccount
+		m.accountToProfile = msg.accountToProfile
+
 	case tea.KeyMsg:
 		// 리전 선택 화면
 		if m.screen == screenRegion {
@@ -235,14 +311,107 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.groups = nil
 				m.vpcs = nil
 				m.subnets = nil
+				m.tgws = nil
+				m.tgwAttachments = nil
+				m.tgwRouteTables = nil
+				m.tgwRoutes = nil
+				m.tgwAssociations = nil
+				m.routeTables = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids))
 			}
 			return m, nil
 		}
 
-		// 디테일 화면에서는 esc/q 로만 뒤로
+		// 연결 체크 화면
+		if m.screen == screenConnectivity {
+			// 결과 화면: 스크롤 + esc로 피커로 돌아가기
+			if m.connectivityResult != nil {
+				pageSize := m.height / 2
+				if pageSize < 1 {
+					pageSize = 1
+				}
+				switch msg.String() {
+				case "ctrl+c":
+					return m, tea.Quit
+				case "esc", "b":
+					m.connectivityResult = nil
+					m.detailScroll = 0
+				case "up", "k":
+					if m.detailScroll > 0 {
+						m.detailScroll--
+					}
+				case "down", "j":
+					if m.detailScroll < m.detailMaxScroll() {
+						m.detailScroll++
+					}
+				case "pgup":
+					m.detailScroll -= pageSize
+					if m.detailScroll < 0 {
+						m.detailScroll = 0
+					}
+				case "pgdown":
+					m.detailScroll += pageSize
+					if max := m.detailMaxScroll(); m.detailScroll > max {
+						m.detailScroll = max
+					}
+				}
+				return m, nil
+			}
+
+			// 피커 화면: 필터 입력 + ↑↓ 네비게이션
+			vpcs := m.connectivityPickerVPCs()
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.screen = screenTable
+				m.connectivitySrcVPC = nil
+				m.connectivityCursor = 0
+				m.input.SetValue("")
+			case "up", "k":
+				if m.connectivityCursor > 0 {
+					m.connectivityCursor--
+				}
+			case "down", "j":
+				if m.connectivityCursor < len(vpcs)-1 {
+					m.connectivityCursor++
+				}
+			case "enter":
+				if m.connectivityCursor < len(vpcs) && m.connectivitySrcVPC != nil {
+					dst := vpcs[m.connectivityCursor]
+					res := awsclient.CheckConnectivity(
+						m.connectivitySrcVPC.VpcID,
+						dst.VpcID,
+						m.tgwAttachments,
+						m.tgwAssociations,
+						m.tgwRoutes,
+						m.vpcs,
+						m.subnets,
+						m.routeTables,
+						m.accountToProfile,
+					)
+					m.connectivityResult = &res
+					m.detailScroll = 0
+				}
+			default:
+				prev := m.input.Value()
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(msg)
+				if m.input.Value() != prev {
+					m.connectivityCursor = 0 // 필터 변경 시 커서 초기화
+				}
+				return m, cmd
+			}
+			return m, nil
+		}
+
+		// 디테일 화면에서는 스크롤 + esc/q 로 뒤로
 		if m.screen == screenDetail {
+			pageSize := m.height / 2
+			if pageSize < 1 {
+				pageSize = 1
+			}
 			switch msg.String() {
 			case "esc", "q", "ctrl+c":
 				if msg.String() == "ctrl+c" {
@@ -250,6 +419,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.screen = screenTable
 				m.selectedInst = nil
+				m.selectedTGWAtt = nil
+				m.detailScroll = 0
+			case "up", "k":
+				if m.detailScroll > 0 {
+					m.detailScroll--
+				}
+			case "down", "j":
+				if m.detailScroll < m.detailMaxScroll() {
+					m.detailScroll++
+				}
+			case "pgup":
+				m.detailScroll -= pageSize
+				if m.detailScroll < 0 {
+					m.detailScroll = 0
+				}
+			case "pgdown":
+				m.detailScroll += pageSize
+				if max := m.detailMaxScroll(); m.detailScroll > max {
+					m.detailScroll = max
+				}
 			}
 			return m, nil
 		}
@@ -266,24 +455,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedInst = inst
 						m.selectedSG, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
+						m.detailScroll = 0
 					}
 				case viewSG:
 					if sg := m.selectedSG_(); sg != nil {
 						m.selectedSG = sg
 						m.selectedInst, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
+						m.detailScroll = 0
 					}
 				case viewVPC:
 					if vpc := m.selectedVPC_(); vpc != nil {
 						m.selectedVPC = vpc
 						m.selectedInst, m.selectedSG, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
+						m.detailScroll = 0
 					}
 				case viewSubnet:
 					if subnet := m.selectedSubnet_(); subnet != nil {
 						m.selectedSubnet = subnet
 						m.selectedInst, m.selectedSG, m.selectedVPC = nil, nil, nil
 						m.screen = screenDetail
+						m.detailScroll = 0
+					}
+				case viewTGW:
+					if att := m.selectedTGWAtt_(); att != nil {
+						m.selectedTGWAtt = att
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet = nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+					}
+				}
+				return m, nil
+			case "c":
+				if m.view == viewVPC {
+					if vpc := m.selectedVPC_(); vpc != nil {
+						m.connectivitySrcVPC = vpc
+						m.connectivityResult = nil
+						m.connectivityCursor = 0
+						m.screen = screenConnectivity
+						m.input.Placeholder = "filter..."
+						m.input.SetValue("")
+						m.input.Focus()
+						return m, textinput.Blink
 					}
 				}
 				return m, nil
@@ -303,8 +517,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fetchErr = nil
 				m.vpcs = nil
 				m.subnets = nil
+				m.tgws = nil
+				m.tgwAttachments = nil
+				m.tgwRouteTables = nil
+				m.tgwRoutes = nil
+				m.tgwAssociations = nil
+				m.routeTables = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids))
 			case "R":
 				m.screen = screenRegion
 				m.regionCursor = 0
@@ -317,7 +537,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			case ":":
 				m.mode = modeCommand
-				m.input.Placeholder = "ec2 / sg"
+				m.input.Placeholder = "ec2 / sg / vpc / subnet / tgw"
 				m.input.SetValue("")
 				m.input.Focus()
 				return m, textinput.Blink
@@ -447,6 +667,34 @@ func (m *Model) selectedSubnet_() *awsclient.Subnet {
 	return nil
 }
 
+func (m *Model) connectivityPickerVPCs() []awsclient.VPC {
+	filter := strings.ToLower(m.input.Value())
+	var result []awsclient.VPC
+	for _, v := range m.vpcs {
+		if m.connectivitySrcVPC != nil && v.VpcID == m.connectivitySrcVPC.VpcID {
+			continue // 소스 VPC 제외
+		}
+		if filter == "" || matchAll([]string{filter}, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.Region) {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+func (m *Model) selectedTGWAtt_() *awsclient.TGWAttachment {
+	row := m.table.SelectedRow()
+	if row == nil {
+		return nil
+	}
+	id := row[2] // Attachment ID column
+	for i := range m.tgwAttachments {
+		if m.tgwAttachments[i].AttachmentID == id {
+			return &m.tgwAttachments[i]
+		}
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
 	switch m.view {
@@ -456,6 +704,8 @@ func (m *Model) sortByIndex(n int) {
 		cols = vpcSortCols
 	case viewSubnet:
 		cols = subnetSortCols
+	case viewTGW:
+		cols = tgwSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return
@@ -615,6 +865,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewVPC
 	case "subnet":
 		m.view = viewSubnet
+	case "tgw":
+		m.view = viewTGW
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -630,6 +882,8 @@ func (m *Model) buildCurrentTable() table.Model {
 		return buildVPCTable(filterVPCRows(m.sortedVPCs(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	case viewSubnet:
 		return buildSubnetTable(filterSubnetRows(m.sortedSubnets(), m.filters), m.height, m.maxProfileWidth(), m.width, m.sortBy, m.sortAsc)
+	case viewTGW:
+		return buildTGWTable(filterTGWRows(m.sortedAttachments(), m.filters, m.accountToProfile), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	default:
 		return buildEC2Table(filterEC2Rows(m.sortedInstances(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	}
@@ -852,6 +1106,103 @@ func matchAll(filters []string, fields ...string) bool {
 		}
 	}
 	return true
+}
+
+// --- TGW table ---
+
+func (m *Model) sortedAttachments() []awsclient.TGWAttachment {
+	atts := make([]awsclient.TGWAttachment, len(m.tgwAttachments))
+	copy(atts, m.tgwAttachments)
+	if m.sortBy == sortNone {
+		return atts
+	}
+	sort.Slice(atts, func(i, j int) bool {
+		a, b := atts[i], atts[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortTgwID:
+			less = a.TgwID < b.TgwID
+		case sortAttachmentID:
+			less = a.AttachmentID < b.AttachmentID
+		case sortResourceType:
+			less = a.ResourceType < b.ResourceType
+		case sortResourceID:
+			less = a.ResourceID < b.ResourceID
+		case sortOwnerID:
+			less = a.ResourceOwnerID < b.ResourceOwnerID
+		case sortState:
+			less = a.State < b.State
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return atts
+}
+
+func buildTGWTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	cols := []table.Column{
+		h(1, sortProfile,      "Profile",       profileWidth),
+		h(2, sortTgwID,        "TGW ID",        22),
+		h(3, sortAttachmentID, "Attachment ID", 26),
+		h(4, sortResourceType, "Type",          10),
+		h(5, sortResourceID,   "Resource ID",  22),
+		h(6, sortOwnerID,      "Owner",        20),
+		h(7, sortOwnerID,      "TGW Owner",    20),
+		h(8, sortState,        "State",        14),
+		h(9, sortRegion,       "Region",       18),
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterTGWRows(atts []awsclient.TGWAttachment, filters []string, accountToProfile map[string]string) []table.Row {
+	if len(filters) == 0 {
+		return tgwRows(atts, accountToProfile)
+	}
+	var filtered []awsclient.TGWAttachment
+	for _, a := range atts {
+		ownerProfile := accountToProfile[a.ResourceOwnerID]
+		tgwOwnerProfile := accountToProfile[a.TgwOwnerID]
+		if matchAll(filters, a.Profile, a.TgwID, a.AttachmentID, a.ResourceType, a.ResourceID,
+			a.ResourceOwnerID, ownerProfile, a.TgwOwnerID, tgwOwnerProfile, a.State, a.Region) {
+			filtered = append(filtered, a)
+		}
+	}
+	return tgwRows(filtered, accountToProfile)
+}
+
+func tgwRows(atts []awsclient.TGWAttachment, accountToProfile map[string]string) []table.Row {
+	rows := make([]table.Row, len(atts))
+	for i, a := range atts {
+		ownerDisplay := a.ResourceOwnerID
+		if profile, ok := accountToProfile[a.ResourceOwnerID]; ok {
+			ownerDisplay = profile
+		}
+		tgwOwnerDisplay := a.TgwOwnerID
+		if profile, ok := accountToProfile[a.TgwOwnerID]; ok {
+			tgwOwnerDisplay = profile
+		}
+		rows[i] = table.Row{
+			a.Profile,
+			a.TgwID,
+			a.AttachmentID,
+			a.ResourceType,
+			a.ResourceID,
+			ownerDisplay,
+			tgwOwnerDisplay,
+			a.State,
+			a.Region,
+		}
+	}
+	return rows
 }
 
 // --- shared table builder ---

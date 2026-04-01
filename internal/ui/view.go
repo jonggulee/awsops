@@ -75,20 +75,15 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenDetail {
-		switch {
-		case m.selectedSG != nil:
-			return renderSGDetail(m.selectedSG)
-		case m.selectedVPC != nil:
-			return renderVPCDetail(m.selectedVPC)
-		case m.selectedSubnet != nil:
-			return renderSubnetDetail(m.selectedSubnet)
-		default:
-			return renderDetail(m.selectedInst)
-		}
+		return applyScroll(m.currentDetailContent(), m.detailScroll, m.height)
 	}
 
 	if m.screen == screenRegion {
 		return renderRegionScreen(m.regions, m.regionCursor, m.width)
+	}
+
+	if m.screen == screenConnectivity {
+		return applyScroll(renderConnectivityScreen(m), m.detailScroll, m.height)
 	}
 
 	var sections []string
@@ -176,7 +171,7 @@ func (m Model) renderInputLine() string {
 		dimOpt    := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(1).PaddingRight(1)
 		sep       := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
 
-		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet}
+		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet, viewTGW}
 		var parts []string
 		for _, v := range views {
 			name := viewNames[v]
@@ -205,8 +200,53 @@ func (m Model) renderHintBar() string {
 		hintItem("↑/↓", "Navigate"),
 		hintItem("q", "Quit"),
 	}
+	if m.view == viewVPC {
+		hints = append(hints, hintItem("c", "Check"))
+	}
 	content := strings.Join(hints, hintBarStyle.Render("  "))
 	return hintBarStyle.Width(m.width).Render(content)
+}
+
+func (m Model) currentDetailContent() string {
+	switch {
+	case m.selectedSG != nil:
+		return renderSGDetail(m.selectedSG)
+	case m.selectedVPC != nil:
+		return renderVPCDetail(m.selectedVPC)
+	case m.selectedSubnet != nil:
+		return renderSubnetDetail(m.selectedSubnet)
+	case m.selectedTGWAtt != nil:
+		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
+	default:
+		return renderDetail(m.selectedInst)
+	}
+}
+
+func (m Model) detailMaxScroll() int {
+	lines := strings.Count(m.currentDetailContent(), "\n") + 1
+	max := lines - m.height
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// applyScroll slices a multi-line string to fit within the terminal height,
+// starting from the given scroll offset. Prevents scrolling past the last line.
+func applyScroll(content string, scroll, height int) string {
+	lines := strings.Split(content, "\n")
+	maxScroll := len(lines) - height
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	end := scroll + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[scroll:end], "\n")
 }
 
 func hintItem(key, action string) string {

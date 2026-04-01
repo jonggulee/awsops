@@ -24,6 +24,31 @@ func fetchVPCsWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchTGWsWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		gws, atts, rts, routes, assocs, errs := awsclient.FetchAllTGWs(context.Background(), regions)
+		return tgwLoadedMsg{
+			gateways: gws, attachments: atts,
+			routeTables: rts, routes: routes, associations: assocs,
+			errs: errs,
+		}
+	}
+}
+
+func fetchRouteTablesWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		tables, errs := awsclient.FetchAllRouteTables(context.Background(), regions)
+		return routeTablesLoadedMsg{tables: tables, errs: errs}
+	}
+}
+
+func fetchAccountIDs() tea.Cmd {
+	return func() tea.Msg {
+		profileToAccount, accountToProfile, _ := awsclient.FetchAccountIDs(context.Background())
+		return accountIDsLoadedMsg{profileToAccount: profileToAccount, accountToProfile: accountToProfile}
+	}
+}
+
 func fetchInstancesWithRegions(regions []string) tea.Cmd {
 	return func() tea.Msg {
 		instances, errs := awsclient.FetchAllInstances(context.Background(), regions)

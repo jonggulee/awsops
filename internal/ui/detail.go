@@ -222,6 +222,136 @@ func renderTags(tags map[string]string) string {
 	return b.String()
 }
 
+func renderTGWAttDetail(
+	att *awsclient.TGWAttachment,
+	associations []awsclient.TGWAssociation,
+	routes []awsclient.TGWRoute,
+	allAtts []awsclient.TGWAttachment,
+	accountToProfile map[string]string,
+	termWidth int,
+) string {
+	if att == nil {
+		return ""
+	}
+
+	resolve := func(accountID string) string {
+		if p, ok := accountToProfile[accountID]; ok {
+			return fmt.Sprintf("%s (%s)", p, accountID)
+		}
+		return accountID
+	}
+
+	var b strings.Builder
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("TGW › %s", att.AttachmentID)) + "\n")
+
+	b.WriteString(sectionStyle.Render("Attachment") + "\n")
+	b.WriteString(row("Profile", att.Profile))
+	b.WriteString(row("Attachment ID", att.AttachmentID))
+	b.WriteString(row("TGW ID", att.TgwID))
+	b.WriteString(row("TGW Owner", resolve(att.TgwOwnerID)))
+	b.WriteString(row("Resource Type", att.ResourceType))
+	b.WriteString(row("Resource ID", att.ResourceID))
+	b.WriteString(row("Resource Owner", resolve(att.ResourceOwnerID)))
+	b.WriteString(row("State", att.State))
+	b.WriteString(row("Region", att.Region))
+
+	// Associated route table
+	b.WriteString(sectionStyle.Render("Route Table Association") + "\n")
+	assocRTID := ""
+	for _, a := range associations {
+		if a.AttachmentID == att.AttachmentID {
+			assocRTID = a.RouteTableID
+			b.WriteString(row("Route Table", a.RouteTableID))
+			b.WriteString(row("State", a.State))
+			break
+		}
+	}
+	if assocRTID == "" {
+		b.WriteString("  " + tagStyle.Render("No route table association found") + "\n")
+	}
+
+	// Routes in the associated route table
+	b.WriteString(sectionStyle.Render("Routes (reachable destinations)") + "\n")
+	if assocRTID == "" {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		// Build attachment lookup: attachmentID → resourceID
+		attResource := make(map[string]string)
+		attOwner := make(map[string]string)
+		for _, a := range allAtts {
+			attResource[a.AttachmentID] = a.ResourceID
+			attOwner[a.AttachmentID] = a.ResourceOwnerID
+		}
+
+		const cidrW, typeW, stateW, indent = 20, 12, 10, 4
+		nextW := termWidth - cidrW - typeW - stateW - indent
+		if nextW < 20 {
+			nextW = 20
+		}
+		sepW := cidrW + nextW + typeW + stateW
+
+		cidrStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(cidrW)
+		nextStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(nextW)
+		typeStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(typeW)
+		stateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
+
+		// Header
+		b.WriteString("  " +
+			cidrStyle.Render("Destination") +
+			nextStyle.Render("Next Hop [Account]") +
+			typeStyle.Render("Type") +
+			stateStyle.Render("State") + "\n")
+		b.WriteString("  " + strings.Repeat("─", sepW) + "\n")
+
+		count := 0
+		for _, r := range routes {
+			if r.RouteTableID != assocRTID {
+				continue
+			}
+			nextHop := r.ResourceID
+			if r.AttachmentID != "" {
+				// 맵에서 리소스 ID 조회 (크로스 계정 attachment는 없을 수 있음)
+				if res, ok := attResource[r.AttachmentID]; ok && res != "" {
+					nextHop = res
+				}
+				// 리소스 ID도 없으면 attachment ID 자체를 표시
+				if nextHop == "" {
+					nextHop = r.AttachmentID
+				}
+				// 소유 계정: 프로필명 우선, 없으면 account ID 그대로 표시
+				if owner, ok := attOwner[r.AttachmentID]; ok && owner != "" {
+					if profile, ok2 := accountToProfile[owner]; ok2 {
+						nextHop = fmt.Sprintf("%s [%s]", nextHop, profile)
+					} else {
+						nextHop = fmt.Sprintf("%s [%s]", nextHop, owner)
+					}
+				}
+			}
+			if nextHop == "" {
+				nextHop = "-"
+			}
+			stateColor := stateStyle
+			if r.State == "blackhole" {
+				stateColor = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+			} else if r.State == "active" {
+				stateColor = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+			}
+			b.WriteString("  " +
+				cidrStyle.Render(r.DestinationCIDR) +
+				nextStyle.Render(nextHop) +
+				typeStyle.Render(r.RouteType) +
+				stateColor.Render(r.State) + "\n")
+			count++
+		}
+		if count == 0 {
+			b.WriteString("  " + tagStyle.Render("No routes found") + "\n")
+		}
+	}
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
 // coloredState is used in the detail view only.
 func coloredState(state string) string {
 	switch state {
