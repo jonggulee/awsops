@@ -200,7 +200,7 @@ func (m Model) renderHintBar() string {
 		hintItem("↑/↓", "Navigate"),
 		hintItem("q", "Quit"),
 	}
-	if m.view == viewVPC {
+	if m.view == viewSubnet {
 		hints = append(hints, hintItem("c", "Check"))
 	}
 	content := strings.Join(hints, hintBarStyle.Render("  "))
@@ -223,7 +223,13 @@ func (m Model) currentDetailContent() string {
 }
 
 func (m Model) detailMaxScroll() int {
-	lines := strings.Count(m.currentDetailContent(), "\n") + 1
+	var content string
+	if m.screen == screenConnectivity && m.connectivityResult != nil {
+		content = renderConnectivityResult(m)
+	} else {
+		content = m.currentDetailContent()
+	}
+	lines := strings.Count(content, "\n") + 1
 	max := lines - m.height
 	if max < 0 {
 		return 0

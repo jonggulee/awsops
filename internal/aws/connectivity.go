@@ -22,17 +22,26 @@ type ConnectivityStep struct {
 }
 
 type ConnectivityResult struct {
-	SrcVpcID  string
-	DstVpcID  string
-	SrcCIDR   string
-	DstCIDR   string
-	Reachable bool
-	Steps     []ConnectivityStep
+	SrcSubnetID string
+	DstSubnetID string
+	SrcVpcID    string
+	DstVpcID    string
+	SrcVpcCIDR  string
+	DstVpcCIDR  string
+	Reachable   bool
+	Steps       []ConnectivityStep
 }
 
-// CheckConnectivity runs a 5-step connectivity check from srcVpcID to dstID (vpc-xxx or subnet-xxx).
+// CheckConnectivity runs a 5-step connectivity check from srcSubnetID to dstSubnetID.
+//
+// Step order (follows the actual packet path):
+//  1. Source subnet route table → TGW for dst VPC CIDR
+//  2. Source VPC TGW attachment active
+//  3. TGW route table → dst VPC CIDR
+//  4. Destination VPC TGW attachment active
+//  5. Destination subnet route table → TGW for src VPC CIDR
 func CheckConnectivity(
-	srcVpcID, dstID string,
+	srcSubnetID, dstSubnetID string,
 	attachments []TGWAttachment,
 	associations []TGWAssociation,
 	tgwRoutes []TGWRoute,
@@ -41,39 +50,47 @@ func CheckConnectivity(
 	routeTables []VPCRouteTable,
 	accountToProfile map[string]string,
 ) ConnectivityResult {
-	result := ConnectivityResult{SrcVpcID: srcVpcID}
+	result := ConnectivityResult{
+		SrcSubnetID: srcSubnetID,
+		DstSubnetID: dstSubnetID,
+	}
 
-	// Resolve dst VPC ID (subnet-xxx → vpc-xxx)
-	dstVpcID := dstID
-	if strings.HasPrefix(dstID, "subnet-") {
-		for _, s := range subnets {
-			if s.SubnetID == dstID {
-				dstVpcID = s.VpcID
-				break
-			}
+	// Resolve subnets → VPC IDs
+	var srcSubnet, dstSubnet *Subnet
+	for i := range subnets {
+		if subnets[i].SubnetID == srcSubnetID {
+			srcSubnet = &subnets[i]
+		}
+		if subnets[i].SubnetID == dstSubnetID {
+			dstSubnet = &subnets[i]
 		}
 	}
-	result.DstVpcID = dstVpcID
+	if srcSubnet != nil {
+		result.SrcVpcID = srcSubnet.VpcID
+	}
+	if dstSubnet != nil {
+		result.DstVpcID = dstSubnet.VpcID
+	}
 
-	// Find CIDRs
+	// Find VPC CIDRs
 	for _, v := range vpcs {
-		if v.VpcID == srcVpcID {
-			result.SrcCIDR = v.CidrBlock
+		if v.VpcID == result.SrcVpcID {
+			result.SrcVpcCIDR = v.CidrBlock
 		}
-		if v.VpcID == dstVpcID {
-			result.DstCIDR = v.CidrBlock
+		if v.VpcID == result.DstVpcID {
+			result.DstVpcCIDR = v.CidrBlock
 		}
 	}
 
-	// Find src/dst attachments (may be nil if cross-account and not visible)
+	// Find TGW attachments for src/dst VPCs
 	var srcAtt, dstAtt *TGWAttachment
 	for i := range attachments {
 		a := &attachments[i]
 		if a.ResourceType == "vpc" {
-			if a.ResourceID == srcVpcID {
+			if a.ResourceID == result.SrcVpcID {
 				srcAtt = a
 			}
-			if a.ResourceID == dstVpcID {
+			if a.ResourceID == result.DstVpcID {
 				dstAtt = a
 			}
 		}
@@ -81,61 +98,60 @@ func CheckConnectivity(
 
 	n := 1
 
-	// ── Step 1: Source VPC TGW attachment active ──────────────────────────
-	if srcAtt == nil {
-		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Source VPC → TGW attachment",
-			Status:      StatusFail,
-			Detail:      fmt.Sprintf("%s has no visible TGW attachment", srcVpcID),
-		})
-		return result
-	}
-	step1Status := StatusOK
-	if srcAtt.State != "available" {
-		step1Status = StatusFail
-	}
-	result.Steps = append(result.Steps, ConnectivityStep{
-		Step:        n,
-		Description: "Source VPC → TGW attachment",
-		Status:      step1Status,
-		Detail:      fmt.Sprintf("%s  state: %s", srcAtt.AttachmentID, srcAtt.State),
-	})
-	n++
-	if step1Status == StatusFail {
-		return result
-	}
-
-	// ── Step 2: Source VPC route table → TGW for dst CIDR ────────────────
-	srcRTs := rtForVPC(routeTables, srcVpcID)
+	// ── Step 1: Source subnet route table → TGW for dst VPC CIDR ─────────
+	srcRTs := rtForSubnet(routeTables, srcSubnetID, result.SrcVpcID)
 	if len(srcRTs) == 0 {
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Source VPC route table → TGW",
-			Status:      StatusUnknown,
-			Detail:      fmt.Sprintf("Route tables for %s not available (no profile access)", srcVpcID),
+			Step: n, Description: "Source subnet route table → TGW",
+			Status: StatusUnknown,
+			Detail: fmt.Sprintf("Route table for %s not available (no profile access)", srcSubnetID),
 		})
 	} else {
-		r := findRouteViaTGW(srcRTs, result.DstCIDR)
+		r, rtID, isExplicit := findRouteViaTGWWithInfo(srcRTs, result.DstVpcCIDR)
 		if r == nil {
 			result.Steps = append(result.Steps, ConnectivityStep{
-				Step:        n,
-				Description: "Source VPC route table → TGW",
-				Status:      StatusFail,
-				Detail:      fmt.Sprintf("No route to %s via TGW in %s route tables", result.DstCIDR, srcVpcID),
+				Step: n, Description: "Source subnet route table → TGW",
+				Status: StatusFail,
+				Detail: fmt.Sprintf("No route to %s via TGW in %s", result.DstVpcCIDR, rtID),
 			})
 			return result
 		}
+		tableNote := "main"
+		if isExplicit {
+			tableNote = "explicit"
+		}
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Source VPC route table → TGW",
-			Status:      StatusOK,
-			Detail:      fmt.Sprintf("%s → %s  state: %s", r.DestinationCIDR, r.GatewayID, r.State),
+			Step: n, Description: "Source subnet route table → TGW",
+			Status: StatusOK,
+			Detail: fmt.Sprintf("%s → %s  [%s: %s]", r.DestinationCIDR, r.GatewayID, tableNote, rtID),
 		})
 	}
 	n++
 
-	// ── Step 3: TGW route table → dst CIDR ───────────────────────────────
+	// ── Step 2: Source VPC TGW attachment active ──────────────────────────
+	if srcAtt == nil {
+		result.Steps = append(result.Steps, ConnectivityStep{
+			Step: n, Description: "Source VPC → TGW attachment",
+			Status: StatusFail,
+			Detail: fmt.Sprintf("%s has no visible TGW attachment", result.SrcVpcID),
+		})
+		return result
+	}
+	s2 := StatusOK
+	if srcAtt.State != "available" {
+		s2 = StatusFail
+	}
+	result.Steps = append(result.Steps, ConnectivityStep{
+		Step: n, Description: "Source VPC → TGW attachment",
+		Status: s2,
+		Detail: fmt.Sprintf("%s  state: %s", srcAtt.AttachmentID, srcAtt.State),
+	})
+	n++
+	if s2 == StatusFail {
+		return result
+	}
+
+	// ── Step 3: TGW route table → dst VPC CIDR ───────────────────────────
 	assocRTID := ""
 	for _, a := range associations {
 		if a.AttachmentID == srcAtt.AttachmentID {
@@ -145,31 +161,28 @@ func CheckConnectivity(
 	}
 	if assocRTID == "" {
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "TGW route table → destination",
-			Status:      StatusUnknown,
-			Detail:      "No route table association for source attachment",
+			Step: n, Description: "TGW route table → destination",
+			Status: StatusUnknown,
+			Detail: "No route table association for source attachment",
 		})
 	} else {
-		tr := findTGWRouteForCIDR(tgwRoutes, assocRTID, result.DstCIDR)
+		tr := findTGWRouteForCIDR(tgwRoutes, assocRTID, result.DstVpcCIDR)
 		if tr == nil {
 			result.Steps = append(result.Steps, ConnectivityStep{
-				Step:        n,
-				Description: "TGW route table → destination",
-				Status:      StatusFail,
-				Detail:      fmt.Sprintf("No route to %s in route table %s", result.DstCIDR, assocRTID),
+				Step: n, Description: "TGW route table → destination",
+				Status: StatusFail,
+				Detail: fmt.Sprintf("No route to %s in TGW route table %s", result.DstVpcCIDR, assocRTID),
 			})
 			return result
 		}
 		nextHop := tr.ResourceID
-		if tr.AttachmentID != "" && nextHop == "" {
+		if nextHop == "" {
 			nextHop = tr.AttachmentID
 		}
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "TGW route table → destination",
-			Status:      StatusOK,
-			Detail:      fmt.Sprintf("%s → %s  type: %s  state: %s", result.DstCIDR, nextHop, tr.RouteType, tr.State),
+			Step: n, Description: "TGW route table → destination",
+			Status: StatusOK,
+			Detail: fmt.Sprintf("%s → %s  type: %s  state: %s", result.DstVpcCIDR, nextHop, tr.RouteType, tr.State),
 		})
 	}
 	n++
@@ -177,57 +190,55 @@ func CheckConnectivity(
 	// ── Step 4: Destination VPC TGW attachment active ─────────────────────
 	if dstAtt == nil {
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Destination VPC → TGW attachment",
-			Status:      StatusUnknown,
-			Detail:      fmt.Sprintf("%s attachment not visible (may be cross-account)", dstVpcID),
+			Step: n, Description: "Destination VPC → TGW attachment",
+			Status: StatusUnknown,
+			Detail: fmt.Sprintf("%s attachment not visible (may be cross-account)", result.DstVpcID),
 		})
 	} else {
-		step4Status := StatusOK
+		s4 := StatusOK
 		if dstAtt.State != "available" {
-			step4Status = StatusFail
+			s4 = StatusFail
 		}
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Destination VPC → TGW attachment",
-			Status:      step4Status,
-			Detail:      fmt.Sprintf("%s  state: %s", dstAtt.AttachmentID, dstAtt.State),
+			Step: n, Description: "Destination VPC → TGW attachment",
+			Status: s4,
+			Detail: fmt.Sprintf("%s  state: %s", dstAtt.AttachmentID, dstAtt.State),
 		})
-		if step4Status == StatusFail {
+		if s4 == StatusFail {
 			return result
 		}
 	}
 	n++
 
-	// ── Step 5: Destination VPC route table → TGW for src CIDR ───────────
-	dstRTs := rtForVPC(routeTables, dstVpcID)
+	// ── Step 5: Destination subnet route table → TGW for src VPC CIDR ────
+	dstRTs := rtForSubnet(routeTables, dstSubnetID, result.DstVpcID)
 	if len(dstRTs) == 0 {
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Destination VPC route table → TGW",
-			Status:      StatusUnknown,
-			Detail:      fmt.Sprintf("Route tables for %s not available (no profile access)", dstVpcID),
+			Step: n, Description: "Destination subnet route table → TGW",
+			Status: StatusUnknown,
+			Detail: fmt.Sprintf("Route table for %s not available (no profile access)", dstSubnetID),
 		})
 	} else {
-		r := findRouteViaTGW(dstRTs, result.SrcCIDR)
+		r, rtID, isExplicit := findRouteViaTGWWithInfo(dstRTs, result.SrcVpcCIDR)
 		if r == nil {
 			result.Steps = append(result.Steps, ConnectivityStep{
-				Step:        n,
-				Description: "Destination VPC route table → TGW",
-				Status:      StatusFail,
-				Detail:      fmt.Sprintf("No route to %s via TGW in %s route tables", result.SrcCIDR, dstVpcID),
+				Step: n, Description: "Destination subnet route table → TGW",
+				Status: StatusFail,
+				Detail: fmt.Sprintf("No route to %s via TGW in %s", result.SrcVpcCIDR, rtID),
 			})
 			return result
 		}
+		tableNote := "main"
+		if isExplicit {
+			tableNote = "explicit"
+		}
 		result.Steps = append(result.Steps, ConnectivityStep{
-			Step:        n,
-			Description: "Destination VPC route table → TGW",
-			Status:      StatusOK,
-			Detail:      fmt.Sprintf("%s → %s  state: %s", r.DestinationCIDR, r.GatewayID, r.State),
+			Step: n, Description: "Destination subnet route table → TGW",
+			Status: StatusOK,
+			Detail: fmt.Sprintf("%s → %s  [%s: %s]", r.DestinationCIDR, r.GatewayID, tableNote, rtID),
 		})
 	}
 
-	// Final verdict: reachable only if no step failed
 	result.Reachable = true
 	for _, s := range result.Steps {
 		if s.Status == StatusFail {
@@ -238,22 +249,66 @@ func CheckConnectivity(
 	return result
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────
-
-func rtForVPC(rts []VPCRouteTable, vpcID string) []VPCRouteTable {
-	var out []VPCRouteTable
-	for _, rt := range rts {
-		if rt.VpcID == vpcID {
-			out = append(out, rt)
-		}
-	}
-	return out
+// SubnetTGWRoute is a TGW route entry from a subnet's route table,
+// enriched with route table context.
+type SubnetTGWRoute struct {
+	DestinationCIDR string
+	GatewayID       string
+	RouteTableID    string
+	IsExplicit      bool // true = explicit subnet association, false = VPC main RT
 }
 
-// findRouteViaTGW returns the first active route in rts that:
-//   - points to a TGW (gateway starts with "tgw-")
-//   - covers destCIDR
-func findRouteViaTGW(rts []VPCRouteTable, destCIDR string) *VPCRoute {
+// TGWRoutesForSubnet returns all active TGW routes from the route table
+// associated with the given subnet (explicit association preferred, main RT fallback).
+func TGWRoutesForSubnet(routeTables []VPCRouteTable, subnetID, vpcID string) []SubnetTGWRoute {
+	rts := rtForSubnet(routeTables, subnetID, vpcID)
+	var routes []SubnetTGWRoute
+	for _, rt := range rts {
+		isExplicit := len(rt.SubnetIDs) > 0
+		for _, r := range rt.Routes {
+			if r.State == "active" && strings.HasPrefix(r.GatewayID, "tgw-") {
+				routes = append(routes, SubnetTGWRoute{
+					DestinationCIDR: r.DestinationCIDR,
+					GatewayID:       r.GatewayID,
+					RouteTableID:    rt.RouteTableID,
+					IsExplicit:      isExplicit,
+				})
+			}
+		}
+	}
+	return routes
+}
+
+// CIDRCovers reports whether routeCIDR's network contains targetCIDR's network address.
+func CIDRCovers(routeCIDR, targetCIDR string) bool {
+	return cidrCovers(routeCIDR, targetCIDR)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+// rtForSubnet returns the route table(s) for the given subnet.
+// It prefers an explicit subnet association; falls back to the VPC main route table.
+func rtForSubnet(rts []VPCRouteTable, subnetID, vpcID string) []VPCRouteTable {
+	// Explicit association first
+	for _, rt := range rts {
+		for _, sid := range rt.SubnetIDs {
+			if sid == subnetID {
+				return []VPCRouteTable{rt}
+			}
+		}
+	}
+	// Fall back to VPC main route table
+	for _, rt := range rts {
+		if rt.VpcID == vpcID && rt.IsMain {
+			return []VPCRouteTable{rt}
+		}
+	}
+	return nil
+}
+
+// findRouteViaTGWWithInfo returns the matching route, its route table ID, and
+// whether it was from an explicit subnet association (true) or main (false).
+func findRouteViaTGWWithInfo(rts []VPCRouteTable, destCIDR string) (*VPCRoute, string, bool) {
 	for ri := range rts {
 		for i := range rts[ri].Routes {
 			r := &rts[ri].Routes[i]
@@ -264,22 +319,19 @@ func findRouteViaTGW(rts []VPCRouteTable, destCIDR string) *VPCRoute {
 				continue
 			}
 			if cidrCovers(r.DestinationCIDR, destCIDR) {
-				return r
+				isExplicit := len(rts[ri].SubnetIDs) > 0
+				return r, rts[ri].RouteTableID, isExplicit
 			}
 		}
 	}
-	return nil
+	return nil, "", false
 }
 
-// findTGWRouteForCIDR returns the first active route in the given TGW route table
-// whose destination covers destCIDR.
+// findTGWRouteForCIDR returns the first active TGW route covering destCIDR in routeTableID.
 func findTGWRouteForCIDR(routes []TGWRoute, routeTableID, destCIDR string) *TGWRoute {
 	for i := range routes {
 		r := &routes[i]
-		if r.RouteTableID != routeTableID {
-			continue
-		}
-		if r.State != "active" {
+		if r.RouteTableID != routeTableID || r.State != "active" {
 			continue
 		}
 		if cidrCovers(r.DestinationCIDR, destCIDR) {
@@ -289,8 +341,7 @@ func findTGWRouteForCIDR(routes []TGWRoute, routeTableID, destCIDR string) *TGWR
 	return nil
 }
 
-// cidrCovers reports whether routeCIDR contains the network address of targetCIDR.
-// e.g. "10.0.0.0/8" covers "10.1.0.0/16".
+// cidrCovers reports whether routeCIDR's network contains targetCIDR's network address.
 func cidrCovers(routeCIDR, targetCIDR string) bool {
 	if targetCIDR == "" {
 		return false

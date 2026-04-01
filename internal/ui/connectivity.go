@@ -23,6 +23,7 @@ var (
 	pickerNameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(24)
 	pickerIDStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(24)
 	pickerCIDRStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
+	pickerAZStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("69"))
 )
 
 func renderConnectivityScreen(m Model) string {
@@ -33,59 +34,209 @@ func renderConnectivityScreen(m Model) string {
 }
 
 func renderConnectivityPicker(m Model) string {
-	var b strings.Builder
+	if m.connectivitySelectedRoute == nil {
+		return renderRoutePicker(m)
+	}
+	return renderSubnetPicker(m)
+}
 
-	b.WriteString(connTitleStyle.Render("Connectivity Check") + "\n\n")
+// renderRoutePicker shows phase 1: TGW routes from the source subnet's route table.
+func renderRoutePicker(m Model) string {
+	var header strings.Builder
 
-	// 소스 VPC 정보
-	if src := m.connectivitySrcVPC; src != nil {
-		b.WriteString(connSrcStyle.Render("  From: ") +
+	header.WriteString(connTitleStyle.Render("Connectivity Check  ›  Select Route") + "\n\n")
+
+	if src := m.connectivitySrcSubnet; src != nil {
+		vpcName := src.VpcID
+		for _, v := range m.vpcs {
+			if v.VpcID == src.VpcID && v.Name != "" {
+				vpcName = v.Name
+				break
+			}
+		}
+		header.WriteString(connSrcStyle.Render("  From: ") +
 			valueStyle.Render(orDash(src.Name)) + "  " +
-			connDetailStyle.Render(fmt.Sprintf("(%s)  %s  %s", src.Profile, src.VpcID, src.CidrBlock)) + "\n")
+			connDetailStyle.Render(fmt.Sprintf("(%s)  %s  %s  vpc: %s  %s",
+				src.Profile, src.SubnetID, src.CidrBlock, vpcName, src.AvailabilityZone)) + "\n")
 	}
 
-	// 필터 입력
-	b.WriteString("\n")
-	b.WriteString(inputStyle.Render("/ " + m.input.View()))
-	b.WriteString("\n\n")
+	header.WriteString("\n")
+	header.WriteString(inputStyle.Render("/ " + m.input.View()))
+	header.WriteString("\n\n")
 
-	// 동적 profile 너비
-	pw := m.maxProfileWidth()
-	profStyle     := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(pw)
-	profStyleSel  := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true).Width(pw)
-	sepW := pw + 24 + 24 + 16 + 2
+	const cidrW = 20
+	const gwW = 22
+	const rtW = 22
+	const typeW = 10
+	const cursorW = 2
+	sepW := cidrW + gwW + rtW + typeW + cursorW
 
-	// VPC 목록 헤더
-	b.WriteString("  " +
-		pickerDimStyle.Render(fmt.Sprintf("  %-*s %-24s %-24s %s", pw, "Profile", "Name", "VPC ID", "CIDR")) + "\n")
-	b.WriteString("  " + pickerDimStyle.Render(strings.Repeat("─", sepW)) + "\n")
+	header.WriteString("  " +
+		pickerDimStyle.Render(fmt.Sprintf("  %-*s %-*s %-*s %s",
+			cidrW, "Destination CIDR", gwW, "Via (TGW)", rtW, "Route Table", "Type")) + "\n")
+	header.WriteString("  " + pickerDimStyle.Render(strings.Repeat("─", sepW)) + "\n")
 
-	vpcs := m.connectivityPickerVPCs()
-	if len(vpcs) == 0 {
-		b.WriteString(connDetailStyle.Render("  No VPCs found") + "\n")
+	headerStr := header.String()
+
+	headerLines := strings.Count(headerStr, "\n")
+	const footerLines = 2
+	visibleItems := m.height - headerLines - footerLines
+	if visibleItems < 1 {
+		visibleItems = 1
+	}
+
+	routes := m.connectivityPickerRoutes()
+
+	listOffset := 0
+	if m.connectivityCursor >= visibleItems {
+		listOffset = m.connectivityCursor - visibleItems + 1
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStr)
+
+	if len(routes) == 0 {
+		b.WriteString(connDetailStyle.Render("  No TGW routes found in route table") + "\n")
 	} else {
-		for i, v := range vpcs {
+		end := listOffset + visibleItems
+		if end > len(routes) {
+			end = len(routes)
+		}
+		cidrStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(cidrW)
+		gwStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("180")).Width(gwW)
+		rtStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(rtW)
+
+		for i := listOffset; i < end; i++ {
+			r := routes[i]
 			cursor := "  "
-			ps      := profStyle
-			nameStyle := pickerNameStyle
-			idStyle   := pickerIDStyle
+			cs := cidrStyle
+			if i == m.connectivityCursor {
+				cursor = pickerCursorStyle.Render("▶ ")
+				cs = cidrStyle.Foreground(lipgloss.Color("226")).Bold(true)
+			}
+			tableNote := "main"
+			if r.IsExplicit {
+				tableNote = "explicit"
+			}
+			b.WriteString(cursor +
+				cs.Render(r.DestinationCIDR) +
+				gwStyle.Render(r.GatewayID) +
+				rtStyle.Render(r.RouteTableID) +
+				pickerDimStyle.Render(tableNote) + "\n")
+		}
+	}
+
+	b.WriteString("\n" + helpStyle.Render("↑/↓/pgup/pgdown: navigate  enter: select route  esc: back"))
+	return b.String()
+}
+
+// renderSubnetPicker shows phase 2: destination subnets covered by the selected route's CIDR.
+func renderSubnetPicker(m Model) string {
+	var header strings.Builder
+
+	header.WriteString(connTitleStyle.Render("Connectivity Check  ›  Select Destination Subnet") + "\n\n")
+
+	if src := m.connectivitySrcSubnet; src != nil {
+		vpcName := src.VpcID
+		for _, v := range m.vpcs {
+			if v.VpcID == src.VpcID && v.Name != "" {
+				vpcName = v.Name
+				break
+			}
+		}
+		header.WriteString(connSrcStyle.Render("  From: ") +
+			valueStyle.Render(orDash(src.Name)) + "  " +
+			connDetailStyle.Render(fmt.Sprintf("(%s)  %s  vpc: %s", src.Profile, src.SubnetID, vpcName)) + "\n")
+	}
+
+	if sel := m.connectivitySelectedRoute; sel != nil {
+		tableNote := "main"
+		if sel.IsExplicit {
+			tableNote = "explicit"
+		}
+		header.WriteString(connSrcStyle.Render("  Route: ") +
+			valueStyle.Render(sel.DestinationCIDR) + "  " +
+			connDetailStyle.Render(fmt.Sprintf("→ %s  [%s: %s]", sel.GatewayID, tableNote, sel.RouteTableID)) + "\n")
+	}
+
+	header.WriteString("\n")
+	header.WriteString(inputStyle.Render("/ " + m.input.View()))
+	header.WriteString("\n\n")
+
+	pw := m.maxProfileWidth()
+	const subnetIDW = 24
+	const colGap = 2 // SubnetID ↔ CIDR 사이 여백
+	const cidrW = 18
+	const azW = 20
+	const cursorW = 2
+	const margin = 4
+	nameW := m.width - pw - subnetIDW - colGap - cidrW - azW - cursorW - margin
+	if nameW < 14 {
+		nameW = 14
+	}
+
+	profStyle    := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(pw)
+	profStyleSel := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true).Width(pw)
+	dynName      := pickerNameStyle.Width(nameW)
+	dynID        := pickerIDStyle.Width(subnetIDW)
+	sepW := pw + nameW + subnetIDW + colGap + cidrW + azW + cursorW
+
+	header.WriteString("  " +
+		pickerDimStyle.Render(fmt.Sprintf("  %-*s %-*s %-*s %*s%-*s %s",
+			pw, "Profile", nameW, "Name", subnetIDW, "Subnet ID", colGap, "", cidrW, "CIDR", "AZ")) + "\n")
+	header.WriteString("  " + pickerDimStyle.Render(strings.Repeat("─", sepW)) + "\n")
+
+	headerStr := header.String()
+
+	headerLines := strings.Count(headerStr, "\n")
+	const footerLines = 2
+	visibleItems := m.height - headerLines - footerLines
+	if visibleItems < 1 {
+		visibleItems = 1
+	}
+
+	subnets := m.connectivityPickerSubnets()
+
+	listOffset := 0
+	if m.connectivityCursor >= visibleItems {
+		listOffset = m.connectivityCursor - visibleItems + 1
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStr)
+
+	if len(subnets) == 0 {
+		b.WriteString(connDetailStyle.Render("  No subnets found in this CIDR range") + "\n")
+	} else {
+		end := listOffset + visibleItems
+		if end > len(subnets) {
+			end = len(subnets)
+		}
+		for i := listOffset; i < end; i++ {
+			s := subnets[i]
+			cursor := "  "
+			ps        := profStyle
+			nameStyle := dynName
+			idStyle   := dynID
 
 			if i == m.connectivityCursor {
 				cursor    = pickerCursorStyle.Render("▶ ")
 				ps        = profStyleSel
-				nameStyle = pickerNameStyle.Foreground(lipgloss.Color("226"))
-				idStyle   = pickerIDStyle.Foreground(lipgloss.Color("226"))
+				nameStyle = dynName.Foreground(lipgloss.Color("226"))
+				idStyle   = dynID.Foreground(lipgloss.Color("226"))
 			}
 
 			b.WriteString(cursor +
-				ps.Render(v.Profile) +
-				nameStyle.Render(orDash(v.Name)) +
-				idStyle.Render(v.VpcID) +
-				pickerCIDRStyle.Render(v.CidrBlock) + "\n")
+				ps.Render(s.Profile) +
+				nameStyle.Render(orDash(s.Name)) +
+				idStyle.Render(s.SubnetID) +
+				strings.Repeat(" ", colGap) +
+				pickerCIDRStyle.Render(fmt.Sprintf("%-*s", cidrW, s.CidrBlock)) +
+				pickerAZStyle.Render(s.AvailabilityZone) + "\n")
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("↑/↓: navigate  enter: check  esc: back"))
+	b.WriteString("\n" + helpStyle.Render("↑/↓/pgup/pgdown: navigate  enter: check  esc: back to routes"))
 	return b.String()
 }
 
@@ -95,26 +246,50 @@ func renderConnectivityResult(m Model) string {
 
 	b.WriteString(connTitleStyle.Render("Connectivity Check › Result") + "\n\n")
 
-	// 소스 → 목적지 요약
-	srcName := res.SrcVpcID
-	if m.connectivitySrcVPC != nil {
-		srcName = fmt.Sprintf("%s (%s)", orDash(m.connectivitySrcVPC.Name), m.connectivitySrcVPC.Profile)
+	// 소스 → 목적지 요약 (서브넷 기준)
+	srcName := res.SrcSubnetID
+	srcVpcName := res.SrcVpcID
+	if m.connectivitySrcSubnet != nil {
+		if m.connectivitySrcSubnet.Name != "" {
+			srcName = m.connectivitySrcSubnet.Name
+		}
+		for _, v := range m.vpcs {
+			if v.VpcID == res.SrcVpcID {
+				if v.Name != "" {
+					srcVpcName = v.Name
+				}
+				break
+			}
+		}
 	}
-	dstName := res.DstVpcID
+
+	dstName := res.DstSubnetID
+	dstVpcName := res.DstVpcID
+	for _, s := range m.subnets {
+		if s.SubnetID == res.DstSubnetID {
+			if s.Name != "" {
+				dstName = s.Name
+			}
+			break
+		}
+	}
 	for _, v := range m.vpcs {
 		if v.VpcID == res.DstVpcID {
-			dstName = fmt.Sprintf("%s (%s)", orDash(v.Name), v.Profile)
+			if v.Name != "" {
+				dstVpcName = v.Name
+			}
 			break
 		}
 	}
 
-	b.WriteString(connSrcStyle.Render("  From: ") + valueStyle.Render(srcName) +
-		connDetailStyle.Render("  "+res.SrcCIDR) + "\n")
-	b.WriteString(connSrcStyle.Render("  To:   ") + valueStyle.Render(dstName) +
-		connDetailStyle.Render("  "+res.DstCIDR) + "\n\n")
+	b.WriteString(connSrcStyle.Render("  From: ") +
+		valueStyle.Render(srcName) +
+		connDetailStyle.Render(fmt.Sprintf("  %s    vpc: %s  %s", res.SrcSubnetID, srcVpcName, res.SrcVpcCIDR)) + "\n")
+	b.WriteString(connSrcStyle.Render("  To:   ") +
+		valueStyle.Render(dstName) +
+		connDetailStyle.Render(fmt.Sprintf("  %s    vpc: %s  %s", res.DstSubnetID, dstVpcName, res.DstVpcCIDR)) + "\n\n")
 
 	// 단계별 결과
-	// label 너비를 실제 step description 중 가장 긴 것 기준으로 동적 계산
 	maxLabelLen := 0
 	for _, step := range res.Steps {
 		l := len(fmt.Sprintf("Step %d  %s", step.Step, step.Description))
@@ -122,7 +297,7 @@ func renderConnectivityResult(m Model) string {
 			maxLabelLen = l
 		}
 	}
-	labelW := maxLabelLen + 2 // 여유 2칸
+	labelW := maxLabelLen + 2
 	dynLabel := connStepLabel.Width(labelW)
 	// "  " + "✓" + "  " = 5자 고정
 	fixedW := 5 + labelW

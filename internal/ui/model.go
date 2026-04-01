@@ -173,9 +173,10 @@ type Model struct {
 	tgwRouteTables   []awsclient.TGWRouteTable
 	tgwRoutes        []awsclient.TGWRoute
 	tgwAssociations  []awsclient.TGWAssociation
-	selectedTGWAtt      *awsclient.TGWAttachment
-	connectivitySrcVPC  *awsclient.VPC
-	connectivityResult  *awsclient.ConnectivityResult
+	selectedTGWAtt            *awsclient.TGWAttachment
+	connectivitySrcSubnet     *awsclient.Subnet
+	connectivitySelectedRoute *awsclient.SubnetTGWRoute // nil = phase1(route 선택), non-nil = phase2(subnet 선택)
+	connectivityResult        *awsclient.ConnectivityResult
 	connectivityCursor  int
 	routeTables         []awsclient.VPCRouteTable
 	profileToAccount    map[string]string // profile → accountID
@@ -359,49 +360,118 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// 피커 화면: 필터 입력 + ↑↓ 네비게이션
-			vpcs := m.connectivityPickerVPCs()
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
-			case "esc":
-				m.screen = screenTable
-				m.connectivitySrcVPC = nil
-				m.connectivityCursor = 0
-				m.input.SetValue("")
-			case "up", "k":
-				if m.connectivityCursor > 0 {
-					m.connectivityCursor--
+			// 피커 화면 (2단계)
+			pageSize := m.height / 2
+			if pageSize < 1 {
+				pageSize = 1
+			}
+
+			if m.connectivitySelectedRoute == nil {
+				// ── Phase 1: 소스 서브넷 route table의 TGW route 선택 ──────────
+				routes := m.connectivityPickerRoutes()
+				switch msg.String() {
+				case "ctrl+c":
+					return m, tea.Quit
+				case "esc":
+					m.screen = screenTable
+					m.connectivitySrcSubnet = nil
+					m.connectivityCursor = 0
+					m.input.SetValue("")
+				case "up", "k":
+					if m.connectivityCursor > 0 {
+						m.connectivityCursor--
+					}
+				case "down", "j":
+					if m.connectivityCursor < len(routes)-1 {
+						m.connectivityCursor++
+					}
+				case "pgup":
+					m.connectivityCursor -= pageSize
+					if m.connectivityCursor < 0 {
+						m.connectivityCursor = 0
+					}
+				case "pgdown":
+					m.connectivityCursor += pageSize
+					if m.connectivityCursor >= len(routes) {
+						m.connectivityCursor = len(routes) - 1
+					}
+					if m.connectivityCursor < 0 {
+						m.connectivityCursor = 0
+					}
+				case "enter":
+					if len(routes) > 0 && m.connectivityCursor < len(routes) {
+						selected := routes[m.connectivityCursor]
+						m.connectivitySelectedRoute = &selected
+						m.connectivityCursor = 0
+						m.input.SetValue("")
+					}
+				default:
+					prev := m.input.Value()
+					var cmd tea.Cmd
+					m.input, cmd = m.input.Update(msg)
+					if m.input.Value() != prev {
+						m.connectivityCursor = 0
+					}
+					return m, cmd
 				}
-			case "down", "j":
-				if m.connectivityCursor < len(vpcs)-1 {
-					m.connectivityCursor++
+			} else {
+				// ── Phase 2: 해당 CIDR 대역의 목적지 서브넷 선택 ─────────────
+				subnets := m.connectivityPickerSubnets()
+				switch msg.String() {
+				case "ctrl+c":
+					return m, tea.Quit
+				case "esc":
+					// phase 1으로 돌아가기
+					m.connectivitySelectedRoute = nil
+					m.connectivityCursor = 0
+					m.input.SetValue("")
+				case "up", "k":
+					if m.connectivityCursor > 0 {
+						m.connectivityCursor--
+					}
+				case "down", "j":
+					if m.connectivityCursor < len(subnets)-1 {
+						m.connectivityCursor++
+					}
+				case "pgup":
+					m.connectivityCursor -= pageSize
+					if m.connectivityCursor < 0 {
+						m.connectivityCursor = 0
+					}
+				case "pgdown":
+					m.connectivityCursor += pageSize
+					if m.connectivityCursor >= len(subnets) {
+						m.connectivityCursor = len(subnets) - 1
+					}
+					if m.connectivityCursor < 0 {
+						m.connectivityCursor = 0
+					}
+				case "enter":
+					if len(subnets) > 0 && m.connectivityCursor < len(subnets) && m.connectivitySrcSubnet != nil {
+						dst := subnets[m.connectivityCursor]
+						res := awsclient.CheckConnectivity(
+							m.connectivitySrcSubnet.SubnetID,
+							dst.SubnetID,
+							m.tgwAttachments,
+							m.tgwAssociations,
+							m.tgwRoutes,
+							m.vpcs,
+							m.subnets,
+							m.routeTables,
+							m.accountToProfile,
+						)
+						m.connectivityResult = &res
+						m.detailScroll = 0
+					}
+				default:
+					prev := m.input.Value()
+					var cmd tea.Cmd
+					m.input, cmd = m.input.Update(msg)
+					if m.input.Value() != prev {
+						m.connectivityCursor = 0
+					}
+					return m, cmd
 				}
-			case "enter":
-				if m.connectivityCursor < len(vpcs) && m.connectivitySrcVPC != nil {
-					dst := vpcs[m.connectivityCursor]
-					res := awsclient.CheckConnectivity(
-						m.connectivitySrcVPC.VpcID,
-						dst.VpcID,
-						m.tgwAttachments,
-						m.tgwAssociations,
-						m.tgwRoutes,
-						m.vpcs,
-						m.subnets,
-						m.routeTables,
-						m.accountToProfile,
-					)
-					m.connectivityResult = &res
-					m.detailScroll = 0
-				}
-			default:
-				prev := m.input.Value()
-				var cmd tea.Cmd
-				m.input, cmd = m.input.Update(msg)
-				if m.input.Value() != prev {
-					m.connectivityCursor = 0 // 필터 변경 시 커서 초기화
-				}
-				return m, cmd
 			}
 			return m, nil
 		}
@@ -488,11 +558,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "c":
-				if m.view == viewVPC {
-					if vpc := m.selectedVPC_(); vpc != nil {
-						m.connectivitySrcVPC = vpc
+				if m.view == viewSubnet {
+					if subnet := m.selectedSubnet_(); subnet != nil {
+						m.connectivitySrcSubnet = subnet
+						m.connectivitySelectedRoute = nil
 						m.connectivityResult = nil
 						m.connectivityCursor = 0
+						m.detailScroll = 0
 						m.screen = screenConnectivity
 						m.input.Placeholder = "filter..."
 						m.input.SetValue("")
@@ -667,15 +739,51 @@ func (m *Model) selectedSubnet_() *awsclient.Subnet {
 	return nil
 }
 
-func (m *Model) connectivityPickerVPCs() []awsclient.VPC {
+// connectivityPickerRoutes returns the TGW routes from the source subnet's route table (phase 1).
+func (m *Model) connectivityPickerRoutes() []awsclient.SubnetTGWRoute {
+	if m.connectivitySrcSubnet == nil {
+		return nil
+	}
+	routes := awsclient.TGWRoutesForSubnet(m.routeTables, m.connectivitySrcSubnet.SubnetID, m.connectivitySrcSubnet.VpcID)
+
 	filter := strings.ToLower(m.input.Value())
-	var result []awsclient.VPC
-	for _, v := range m.vpcs {
-		if m.connectivitySrcVPC != nil && v.VpcID == m.connectivitySrcVPC.VpcID {
-			continue // 소스 VPC 제외
+	if filter == "" {
+		return routes
+	}
+	var result []awsclient.SubnetTGWRoute
+	for _, r := range routes {
+		if matchAll([]string{filter}, r.DestinationCIDR, r.GatewayID, r.RouteTableID) {
+			result = append(result, r)
 		}
-		if filter == "" || matchAll([]string{filter}, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.Region) {
-			result = append(result, v)
+	}
+	return result
+}
+
+// connectivityPickerSubnets returns subnets covered by the selected route's CIDR (phase 2).
+func (m *Model) connectivityPickerSubnets() []awsclient.Subnet {
+	if m.connectivitySelectedRoute == nil {
+		return nil
+	}
+	routeCIDR := m.connectivitySelectedRoute.DestinationCIDR
+
+	// 목적지 VPC CIDR 조회용 맵
+	vpcCIDR := map[string]string{}
+	for _, v := range m.vpcs {
+		vpcCIDR[v.VpcID] = v.CidrBlock
+	}
+
+	filter := strings.ToLower(m.input.Value())
+	var result []awsclient.Subnet
+	for _, s := range m.subnets {
+		if m.connectivitySrcSubnet != nil && s.SubnetID == m.connectivitySrcSubnet.SubnetID {
+			continue
+		}
+		// 선택된 route CIDR이 이 서브넷의 VPC CIDR을 포함하는지 확인
+		if !awsclient.CIDRCovers(routeCIDR, vpcCIDR[s.VpcID]) {
+			continue
+		}
+		if filter == "" || matchAll([]string{filter}, s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region) {
+			result = append(result, s)
 		}
 	}
 	return result
