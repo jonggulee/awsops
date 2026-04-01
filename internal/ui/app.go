@@ -17,6 +17,13 @@ func fetchSecurityGroups() tea.Cmd {
 	return fetchSGWithRegions([]string{awsclient.DefaultRegion})
 }
 
+func fetchVPCsWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		vpcs, subnets, errs := awsclient.FetchAllVPCs(context.Background(), regions)
+		return vpcsLoadedMsg{vpcs: vpcs, subnets: subnets, errs: errs}
+	}
+}
+
 func fetchInstancesWithRegions(regions []string) tea.Cmd {
 	return func() tea.Msg {
 		instances, errs := awsclient.FetchAllInstances(context.Background(), regions)

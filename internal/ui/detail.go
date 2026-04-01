@@ -53,36 +53,7 @@ func renderDetail(inst *awsclient.Instance) string {
 
 	// Tags
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
-	if len(inst.Tags) == 0 {
-		b.WriteString("  " + tagStyle.Render("-") + "\n")
-	} else {
-		keys := make([]string, 0, len(inst.Tags))
-		for k := range inst.Tags {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		// 키 최대 길이 계산 (최대 36자 제한)
-		maxKeyLen := 0
-		for _, k := range keys {
-			if len(k) > maxKeyLen {
-				maxKeyLen = len(k)
-			}
-		}
-		const maxTagKeyWidth = 36
-		if maxKeyLen > maxTagKeyWidth {
-			maxKeyLen = maxTagKeyWidth
-		}
-		tagLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(maxKeyLen + 2)
-
-		for _, k := range keys {
-			displayKey := k
-			if len(k) > maxTagKeyWidth {
-				displayKey = k[:maxTagKeyWidth-1] + "…"
-			}
-			b.WriteString("  " + tagLabelStyle.Render(displayKey) + valueStyle.Render(inst.Tags[k]) + "\n")
-		}
-	}
+	b.WriteString(renderTags(inst.Tags))
 
 	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
 
@@ -166,6 +137,87 @@ func renderRules(rules []awsclient.SGRule) string {
 			ruleProtoStyle.Render(r.ProtocolStr()) +
 			rulePortStyle.Render(r.PortRange()) +
 			ruleSourceStyle.Render(r.Source) + "\n")
+	}
+	return b.String()
+}
+
+func renderVPCDetail(vpc *awsclient.VPC) string {
+	if vpc == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("VPC › %s", orDash(vpc.Name))) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", vpc.Profile))
+	b.WriteString(row("VPC ID", vpc.VpcID))
+	b.WriteString(row("Name", orDash(vpc.Name)))
+	b.WriteString(row("CIDR Block", vpc.CidrBlock))
+	b.WriteString(row("State", vpc.State))
+	b.WriteString(row("Default", fmt.Sprintf("%v", vpc.IsDefault)))
+	b.WriteString(row("Region", vpc.Region))
+
+	b.WriteString(sectionStyle.Render("Tags") + "\n")
+	b.WriteString(renderTags(vpc.Tags))
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
+func renderSubnetDetail(subnet *awsclient.Subnet) string {
+	if subnet == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Subnet › %s", orDash(subnet.Name))) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", subnet.Profile))
+	b.WriteString(row("Subnet ID", subnet.SubnetID))
+	b.WriteString(row("Name", orDash(subnet.Name)))
+	b.WriteString(row("VPC ID", subnet.VpcID))
+	b.WriteString(row("CIDR Block", subnet.CidrBlock))
+	b.WriteString(row("Availability Zone", subnet.AvailabilityZone))
+	b.WriteString(row("Available IPs", fmt.Sprintf("%d", subnet.AvailableIPs)))
+	b.WriteString(row("Default", fmt.Sprintf("%v", subnet.IsDefault)))
+	b.WriteString(row("Region", subnet.Region))
+
+	b.WriteString(sectionStyle.Render("Tags") + "\n")
+	b.WriteString(renderTags(subnet.Tags))
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
+func renderTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "  " + tagStyle.Render("-") + "\n"
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	maxKeyLen := 0
+	for _, k := range keys {
+		if len(k) > maxKeyLen {
+			maxKeyLen = len(k)
+		}
+	}
+	const maxTagKeyWidth = 36
+	if maxKeyLen > maxTagKeyWidth {
+		maxKeyLen = maxTagKeyWidth
+	}
+	tagLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(maxKeyLen + 2)
+
+	var b strings.Builder
+	for _, k := range keys {
+		displayKey := k
+		if len(k) > maxTagKeyWidth {
+			displayKey = k[:maxTagKeyWidth-1] + "…"
+		}
+		b.WriteString("  " + tagLabelStyle.Render(displayKey) + valueStyle.Render(tags[k]) + "\n")
 	}
 	return b.String()
 }

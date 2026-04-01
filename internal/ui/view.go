@@ -75,10 +75,16 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenDetail {
-		if m.selectedSG != nil {
+		switch {
+		case m.selectedSG != nil:
 			return renderSGDetail(m.selectedSG)
+		case m.selectedVPC != nil:
+			return renderVPCDetail(m.selectedVPC)
+		case m.selectedSubnet != nil:
+			return renderSubnetDetail(m.selectedSubnet)
+		default:
+			return renderDetail(m.selectedInst)
 		}
-		return renderDetail(m.selectedInst)
 	}
 
 	if m.screen == screenRegion {
@@ -164,7 +170,24 @@ func (m Model) renderInputLine() string {
 		}
 		return inputStyle.Render("/ " + prefix + m.input.View())
 	case modeCommand:
-		return inputStyle.Render(": " + m.input.View())
+		inputLine := inputStyle.Render(": " + m.input.View())
+
+		activeOpt := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true).PaddingLeft(1).PaddingRight(1)
+		dimOpt    := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(1).PaddingRight(1)
+		sep       := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
+
+		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet}
+		var parts []string
+		for _, v := range views {
+			name := viewNames[v]
+			if v == m.view {
+				parts = append(parts, activeOpt.Render(name))
+			} else {
+				parts = append(parts, dimOpt.Render(name))
+			}
+		}
+		hintLine := "  " + strings.Join(parts, sep)
+		return inputLine + "\n" + hintLine
 	}
 	return ""
 }
@@ -173,9 +196,9 @@ func (m Model) renderHintBar() string {
 	var hints []string
 	hints = []string{
 		hintItem("/", "Search"),
-		hintItem(":", "Command"),
+		hintItem(":", "View"),
 		hintItem("d", "Describe"),
-		hintItem("1-8", "Sort"),
+		hintItem("1-0", "Sort"),
 		hintItem("r", "Refresh"),
 		hintItem("R", "Regions"),
 		hintItem("esc", "Clear"),

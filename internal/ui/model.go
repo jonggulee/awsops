@@ -26,6 +26,12 @@ type sgLoadedMsg struct {
 	errs   []error
 }
 
+type vpcsLoadedMsg struct {
+	vpcs    []awsclient.VPC
+	subnets []awsclient.Subnet
+	errs    []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -39,8 +45,10 @@ const (
 type viewType int
 
 const (
-	viewEC2 viewType = iota
+	viewEC2    viewType = iota
 	viewSG
+	viewVPC
+	viewSubnet
 )
 
 type screen int
@@ -48,12 +56,14 @@ type screen int
 const (
 	screenTable  screen = iota
 	screenDetail        // d 눌렀을 때 상세 화면
-	screenRegion        // r 눌렀을 때 리전 선택 화면
+	screenRegion        // R 눌렀을 때 리전 선택 화면
 )
 
 var viewNames = map[viewType]string{
-	viewEC2: "ec2",
-	viewSG:  "sg",
+	viewEC2:    "ec2",
+	viewSG:     "sg",
+	viewVPC:    "vpc",
+	viewSubnet: "subnet",
 }
 
 // --- sort ---
@@ -71,14 +81,23 @@ const (
 	sortPublicIP
 	sortGroupID
 	sortVpcID
+	sortSubnetID
+	sortCidr
+	sortAZ
 	sortRegion
 )
 
-// EC2: 1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=Region
-var ec2SortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortState, sortType, sortPrivateIP, sortPublicIP, sortRegion}
+// EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
+var ec2SortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortState, sortType, sortPrivateIP, sortPublicIP, sortVpcID, sortSubnetID, sortRegion}
 
-// SG:  1=Profile 2=Name 3=GroupID 4=VpcID 5=Description(없음) 6=Region
+// SG:     1=Profile 2=Name 3=GroupID 4=VpcID 5=- 6=Region
 var sgSortCols = []sortCol{sortProfile, sortName, sortGroupID, sortVpcID, sortNone, sortRegion}
+
+// VPC:    1=Profile 2=Name 3=VpcID 4=CIDR 5=State 6=Region
+var vpcSortCols = []sortCol{sortProfile, sortName, sortVpcID, sortCidr, sortState, sortRegion}
+
+// Subnet: 1=Profile 2=Name 3=SubnetID 4=VpcID 5=CIDR 6=AZ 7=Region
+var subnetSortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortVpcID, sortCidr, sortAZ, sortRegion}
 
 var sortColNames = map[sortCol]string{
 	sortProfile:    "Profile",
@@ -90,6 +109,9 @@ var sortColNames = map[sortCol]string{
 	sortPublicIP:   "Public IP",
 	sortGroupID:    "Group ID",
 	sortVpcID:      "VPC ID",
+	sortSubnetID:   "Subnet ID",
+	sortCidr:       "CIDR",
+	sortAZ:         "AZ",
 	sortRegion:     "Region",
 }
 
@@ -104,9 +126,13 @@ type Model struct {
 	screen         screen
 	selectedInst   *awsclient.Instance
 	selectedSG     *awsclient.SecurityGroup
+	selectedVPC    *awsclient.VPC
+	selectedSubnet *awsclient.Subnet
 	filters        []string
 	instances      []awsclient.Instance
 	groups         []awsclient.SecurityGroup
+	vpcs           []awsclient.VPC
+	subnets        []awsclient.Subnet
 	fetchErr       []error
 	loading        bool
 	width          int
@@ -137,7 +163,7 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchInstances(), fetchSecurityGroups())
+	return tea.Batch(m.spinner.Tick, fetchInstances(), fetchSecurityGroups(), fetchVPCsWithRegions([]string{awsclient.DefaultRegion}))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -166,6 +192,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.groups = msg.groups
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		m.loading = len(m.groups) == 0 && len(m.instances) == 0
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case vpcsLoadedMsg:
+		m.vpcs = msg.vpcs
+		m.subnets = msg.subnets
+		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
 		}
@@ -199,8 +233,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.instances = nil
 				m.groups = nil
+				m.vpcs = nil
+				m.subnets = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -228,20 +264,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case viewEC2:
 					if inst := m.selectedInstance(); inst != nil {
 						m.selectedInst = inst
-						m.selectedSG = nil
+						m.selectedSG, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
 					}
 				case viewSG:
 					if sg := m.selectedSG_(); sg != nil {
 						m.selectedSG = sg
-						m.selectedInst = nil
+						m.selectedInst, m.selectedVPC, m.selectedSubnet = nil, nil, nil
+						m.screen = screenDetail
+					}
+				case viewVPC:
+					if vpc := m.selectedVPC_(); vpc != nil {
+						m.selectedVPC = vpc
+						m.selectedInst, m.selectedSG, m.selectedSubnet = nil, nil, nil
+						m.screen = screenDetail
+					}
+				case viewSubnet:
+					if subnet := m.selectedSubnet_(); subnet != nil {
+						m.selectedSubnet = subnet
+						m.selectedInst, m.selectedSG, m.selectedVPC = nil, nil, nil
 						m.screen = screenDetail
 					}
 				}
 				return m, nil
-			case "1", "2", "3", "4", "5", "6", "7", "8":
+			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 				n := int(msg.String()[0]-'0') - 1
 				m.sortByIndex(n)
+				m.table = m.buildCurrentTable()
+				return m, nil
+			case "0":
+				m.sortByIndex(9)
 				m.table = m.buildCurrentTable()
 				return m, nil
 			case "r":
@@ -249,8 +301,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.instances = nil
 				m.groups = nil
 				m.fetchErr = nil
+				m.vpcs = nil
+				m.subnets = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids))
 			case "R":
 				m.screen = screenRegion
 				m.regionCursor = 0
@@ -365,10 +419,43 @@ func (m *Model) selectedSG_() *awsclient.SecurityGroup {
 	return nil
 }
 
+func (m *Model) selectedVPC_() *awsclient.VPC {
+	row := m.table.SelectedRow()
+	if row == nil {
+		return nil
+	}
+	id := row[2] // VPC ID column
+	for i := range m.vpcs {
+		if m.vpcs[i].VpcID == id {
+			return &m.vpcs[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) selectedSubnet_() *awsclient.Subnet {
+	row := m.table.SelectedRow()
+	if row == nil {
+		return nil
+	}
+	id := row[2] // Subnet ID column
+	for i := range m.subnets {
+		if m.subnets[i].SubnetID == id {
+			return &m.subnets[i]
+		}
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
-	if m.view == viewSG {
+	switch m.view {
+	case viewSG:
 		cols = sgSortCols
+	case viewVPC:
+		cols = vpcSortCols
+	case viewSubnet:
+		cols = subnetSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return
@@ -408,6 +495,16 @@ func (m *Model) sortedInstances() []awsclient.Instance {
 			less = a.State < b.State
 		case sortType:
 			less = a.Type < b.Type
+		case sortPrivateIP:
+			less = a.PrivateIP < b.PrivateIP
+		case sortPublicIP:
+			less = a.PublicIP < b.PublicIP
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortSubnetID:
+			less = a.SubnetID < b.SubnetID
+		case sortInstanceID:
+			less = a.InstanceID < b.InstanceID
 		case sortRegion:
 			less = a.Region < b.Region
 		}
@@ -444,21 +541,95 @@ func (m *Model) sortedGroups() []awsclient.SecurityGroup {
 	return groups
 }
 
+func (m *Model) sortedVPCs() []awsclient.VPC {
+	vpcs := make([]awsclient.VPC, len(m.vpcs))
+	copy(vpcs, m.vpcs)
+	if m.sortBy == sortNone {
+		return vpcs
+	}
+	sort.Slice(vpcs, func(i, j int) bool {
+		a, b := vpcs[i], vpcs[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortCidr:
+			less = a.CidrBlock < b.CidrBlock
+		case sortState:
+			less = a.State < b.State
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return vpcs
+}
+
+func (m *Model) sortedSubnets() []awsclient.Subnet {
+	subnets := make([]awsclient.Subnet, len(m.subnets))
+	copy(subnets, m.subnets)
+	if m.sortBy == sortNone {
+		return subnets
+	}
+	sort.Slice(subnets, func(i, j int) bool {
+		a, b := subnets[i], subnets[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortInstanceID: // SubnetID
+			less = a.SubnetID < b.SubnetID
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortCidr:
+			less = a.CidrBlock < b.CidrBlock
+		case sortAZ:
+			less = a.AvailabilityZone < b.AvailabilityZone
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return subnets
+}
+
 func (m *Model) applyCommand(cmd string) {
 	switch strings.TrimSpace(strings.ToLower(cmd)) {
 	case "ec2":
 		m.view = viewEC2
-		m.table = m.buildCurrentTable()
 	case "sg":
 		m.view = viewSG
-		m.table = m.buildCurrentTable()
+	case "vpc":
+		m.view = viewVPC
+	case "subnet":
+		m.view = viewSubnet
 	}
+	m.sortBy = sortNone
+	m.filters = nil
+	m.input.SetValue("")
+	m.table = m.buildCurrentTable()
 }
 
 func (m *Model) buildCurrentTable() table.Model {
 	switch m.view {
 	case viewSG:
 		return buildSGTable(filterSGRows(m.sortedGroups(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+	case viewVPC:
+		return buildVPCTable(filterVPCRows(m.sortedVPCs(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+	case viewSubnet:
+		return buildSubnetTable(filterSubnetRows(m.sortedSubnets(), m.filters), m.height, m.maxProfileWidth(), m.width, m.sortBy, m.sortAsc)
 	default:
 		return buildEC2Table(filterEC2Rows(m.sortedInstances(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	}
@@ -491,14 +662,16 @@ func buildEC2Table(rows []table.Row, height, profileWidth int, sortBy sortCol, s
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
 	cols := []table.Column{
-		h(1, sortProfile,    "Profile",     profileWidth),
-		h(2, sortName,       "Name",        16),
-		h(3, sortInstanceID, "Instance ID", 20),
-		h(4, sortState,      "State",       12),
-		h(5, sortType,       "Type",        10),
-		h(6, sortPrivateIP,  "Private IP",  16),
-		h(7, sortPublicIP,   "Public IP",   16),
-		h(8, sortRegion,     "Region",      18),
+		h(1,  sortProfile,    "Profile",     profileWidth),
+		h(2,  sortName,       "Name",        16),
+		h(3,  sortInstanceID, "Instance ID", 20),
+		h(4,  sortState,      "State",       12),
+		h(5,  sortType,       "Type",        10),
+		h(6,  sortPrivateIP,  "Private IP",  16),
+		h(7,  sortPublicIP,   "Public IP",   16),
+		h(8,  sortVpcID,      "VPC ID",      22),
+		h(9,  sortSubnetID,   "Subnet ID",   24),
+		h(10, sortRegion,     "Region",      18),
 	}
 	return newTable(cols, rows, height)
 }
@@ -509,7 +682,7 @@ func filterEC2Rows(instances []awsclient.Instance, filters []string) []table.Row
 	}
 	var filtered []awsclient.Instance
 	for _, inst := range instances {
-		if matchAll(filters, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP) {
+		if matchAll(filters, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.VpcID, inst.SubnetID) {
 			filtered = append(filtered, inst)
 		}
 	}
@@ -519,7 +692,7 @@ func filterEC2Rows(instances []awsclient.Instance, filters []string) []table.Row
 func ec2Rows(instances []awsclient.Instance) []table.Row {
 	rows := make([]table.Row, len(instances))
 	for i, inst := range instances {
-		rows[i] = table.Row{inst.Profile, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.PublicIP, inst.Region}
+		rows[i] = table.Row{inst.Profile, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.PublicIP, inst.VpcID, inst.SubnetID, inst.Region}
 	}
 	return rows
 }
@@ -570,6 +743,95 @@ func sgRows(groups []awsclient.SecurityGroup) []table.Row {
 	rows := make([]table.Row, len(groups))
 	for i, sg := range groups {
 		rows[i] = table.Row{sg.Profile, sg.Name, sg.GroupID, sg.VpcID, sg.Description, sg.Region}
+	}
+	return rows
+}
+
+// --- VPC table ---
+
+func buildVPCTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	cols := []table.Column{
+		h(1, sortProfile, "Profile",  profileWidth),
+		h(2, sortName,    "Name",     20),
+		h(3, sortVpcID,   "VPC ID",   22),
+		h(4, sortCidr,    "CIDR",     18),
+		h(5, sortState,   "State",    12),
+		h(6, sortRegion,  "Region",   18),
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterVPCRows(vpcs []awsclient.VPC, filters []string) []table.Row {
+	if len(filters) == 0 {
+		return vpcRows(vpcs)
+	}
+	var filtered []awsclient.VPC
+	for _, v := range vpcs {
+		if matchAll(filters, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.State, v.Region) {
+			filtered = append(filtered, v)
+		}
+	}
+	return vpcRows(filtered)
+}
+
+func vpcRows(vpcs []awsclient.VPC) []table.Row {
+	rows := make([]table.Row, len(vpcs))
+	for i, v := range vpcs {
+		def := ""
+		if v.IsDefault {
+			def = "default"
+		}
+		_ = def
+		rows[i] = table.Row{v.Profile, v.Name, v.VpcID, v.CidrBlock, v.State, v.Region}
+	}
+	return rows
+}
+
+// --- Subnet table ---
+
+func buildSubnetTable(rows []table.Row, height, profileWidth, termWidth int, sortBy sortCol, sortAsc bool) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	const fixedCols = 24 + 22 + 18 + 20 + 18 // SubnetID+VpcID+CIDR+AZ+Region
+	const padding = 16                          // 테이블 내부 패딩 여유분
+	const minNameWidth = 18
+	nameWidth := termWidth - profileWidth - fixedCols - padding
+	if nameWidth < minNameWidth {
+		nameWidth = minNameWidth
+	}
+	cols := []table.Column{
+		h(1, sortProfile,    "Profile",   profileWidth),
+		h(2, sortName,       "Name",      nameWidth),
+		h(3, sortInstanceID, "Subnet ID", 24),
+		h(4, sortVpcID,      "VPC ID",    22),
+		h(5, sortCidr,       "CIDR",      18),
+		h(6, sortAZ,         "AZ",        20),
+		h(7, sortRegion,     "Region",    18),
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterSubnetRows(subnets []awsclient.Subnet, filters []string) []table.Row {
+	if len(filters) == 0 {
+		return subnetRows(subnets)
+	}
+	var filtered []awsclient.Subnet
+	for _, s := range subnets {
+		if matchAll(filters, s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region) {
+			filtered = append(filtered, s)
+		}
+	}
+	return subnetRows(filtered)
+}
+
+func subnetRows(subnets []awsclient.Subnet) []table.Row {
+	rows := make([]table.Row, len(subnets))
+	for i, s := range subnets {
+		rows[i] = table.Row{s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region}
 	}
 	return rows
 }
