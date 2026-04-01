@@ -12,8 +12,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 )
 
+const DefaultRegion = "ap-northeast-2"
+
 type ProfileClient struct {
 	Profile string
+	Region  string
 	EC2     *ec2.Client
 }
 
@@ -43,9 +46,9 @@ func LoadProfiles() ([]string, error) {
 	return profiles, scanner.Err()
 }
 
-func NewProfileClient(ctx context.Context, profile string) (*ProfileClient, error) {
+func NewProfileClient(ctx context.Context, profile, region string) (*ProfileClient, error) {
 	opts := []func(*config.LoadOptions) error{
-		config.WithRegion("ap-northeast-2"),
+		config.WithRegion(region),
 	}
 	if profile != "default" {
 		opts = append(opts, config.WithSharedConfigProfile(profile))
@@ -58,6 +61,7 @@ func NewProfileClient(ctx context.Context, profile string) (*ProfileClient, erro
 
 	return &ProfileClient{
 		Profile: profile,
+		Region:  region,
 		EC2:     ec2.NewFromConfig(cfg),
 	}, nil
 }

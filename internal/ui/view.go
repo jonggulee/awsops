@@ -75,7 +75,14 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenDetail {
+		if m.selectedSG != nil {
+			return renderSGDetail(m.selectedSG)
+		}
 		return renderDetail(m.selectedInst)
+	}
+
+	if m.screen == screenRegion {
+		return renderRegionScreen(m.regions, m.regionCursor, m.width)
 	}
 
 	var sections []string
@@ -100,7 +107,8 @@ func (m Model) View() string {
 func (m Model) renderHeaderBar() string {
 	left := headerAppStyle.Render("awsops")
 
-	profileCount := fmt.Sprintf("%d profiles loaded", m.profileCount())
+	regionIDs := selectedRegionIDs(m.regions)
+	profileCount := fmt.Sprintf("%d profiles  %s", m.profileCount(), strings.Join(regionIDs, ", "))
 	right := headerDimStyle.Render(profileCount)
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
@@ -123,10 +131,21 @@ func (m Model) renderCrumbBar() string {
 			crumbFilterStyle.Render("["+strings.Join(m.filters, " & ")+"]")
 	}
 
+	// 정렬 표시
+	sortPart := ""
+	if m.sortBy != sortNone {
+		arrow := " ↑"
+		if !m.sortAsc {
+			arrow = " ↓"
+		}
+		sortPart = crumbBarStyle.Render("  ") +
+			crumbFilterStyle.Render(sortColNames[m.sortBy]+arrow)
+	}
+
 	// 행 수
 	rowCount := crumbBarStyle.Render(fmt.Sprintf("  (%d)", len(m.table.Rows())))
 
-	content := view + filterPart + rowCount
+	content := view + filterPart + sortPart + rowCount
 	padding := m.width - lipgloss.Width(content) - 1
 	if padding < 0 {
 		padding = 0
@@ -152,23 +171,16 @@ func (m Model) renderInputLine() string {
 
 func (m Model) renderHintBar() string {
 	var hints []string
-	if m.view == viewEC2 {
-		hints = []string{
-			hintItem("/", "Search"),
-			hintItem(":", "Command"),
-			hintItem("d", "Describe"),
-			hintItem("esc", "Clear"),
-			hintItem("↑/↓", "Navigate"),
-			hintItem("q", "Quit"),
-		}
-	} else {
-		hints = []string{
-			hintItem("/", "Search"),
-			hintItem(":", "Command"),
-			hintItem("esc", "Clear"),
-			hintItem("↑/↓", "Navigate"),
-			hintItem("q", "Quit"),
-		}
+	hints = []string{
+		hintItem("/", "Search"),
+		hintItem(":", "Command"),
+		hintItem("d", "Describe"),
+		hintItem("1-8", "Sort"),
+		hintItem("r", "Refresh"),
+		hintItem("R", "Regions"),
+		hintItem("esc", "Clear"),
+		hintItem("↑/↓", "Navigate"),
+		hintItem("q", "Quit"),
 	}
 	content := strings.Join(hints, hintBarStyle.Render("  "))
 	return hintBarStyle.Width(m.width).Render(content)

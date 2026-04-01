@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -46,11 +48,49 @@ type screen int
 const (
 	screenTable  screen = iota
 	screenDetail        // d 눌렀을 때 상세 화면
+	screenRegion        // r 눌렀을 때 리전 선택 화면
 )
 
 var viewNames = map[viewType]string{
 	viewEC2: "ec2",
 	viewSG:  "sg",
+}
+
+// --- sort ---
+
+type sortCol int
+
+const (
+	sortNone sortCol = iota
+	sortProfile
+	sortName
+	sortInstanceID
+	sortState
+	sortType
+	sortPrivateIP
+	sortPublicIP
+	sortGroupID
+	sortVpcID
+	sortRegion
+)
+
+// EC2: 1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=Region
+var ec2SortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortState, sortType, sortPrivateIP, sortPublicIP, sortRegion}
+
+// SG:  1=Profile 2=Name 3=GroupID 4=VpcID 5=Description(없음) 6=Region
+var sgSortCols = []sortCol{sortProfile, sortName, sortGroupID, sortVpcID, sortNone, sortRegion}
+
+var sortColNames = map[sortCol]string{
+	sortProfile:    "Profile",
+	sortName:       "Name",
+	sortInstanceID: "Instance ID",
+	sortState:      "State",
+	sortType:       "Type",
+	sortPrivateIP:  "Private IP",
+	sortPublicIP:   "Public IP",
+	sortGroupID:    "Group ID",
+	sortVpcID:      "VPC ID",
+	sortRegion:     "Region",
 }
 
 // --- model ---
@@ -63,6 +103,7 @@ type Model struct {
 	view           viewType
 	screen         screen
 	selectedInst   *awsclient.Instance
+	selectedSG     *awsclient.SecurityGroup
 	filters        []string
 	instances      []awsclient.Instance
 	groups         []awsclient.SecurityGroup
@@ -70,6 +111,10 @@ type Model struct {
 	loading        bool
 	width          int
 	height         int
+	regions        []regionEntry
+	regionCursor   int
+	sortBy         sortCol
+	sortAsc        bool
 }
 
 func New() Model {
@@ -87,6 +132,7 @@ func New() Model {
 		mode:    modeNormal,
 		view:    viewEC2,
 		screen:  screenTable,
+		regions: defaultRegions(),
 	}
 }
 
@@ -125,6 +171,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// 리전 선택 화면
+		if m.screen == screenRegion {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.screen = screenTable
+			case "up", "k":
+				if m.regionCursor > 0 {
+					m.regionCursor--
+				}
+			case "down", "j":
+				if m.regionCursor < len(m.regions)-1 {
+					m.regionCursor++
+				}
+			case " ":
+				m.regions[m.regionCursor].selected = !m.regions[m.regionCursor].selected
+			case "enter":
+				ids := selectedRegionIDs(m.regions)
+				if len(ids) == 0 {
+					// 최소 하나는 선택 강제
+					m.regions[m.regionCursor].selected = true
+					ids = selectedRegionIDs(m.regions)
+				}
+				m.screen = screenTable
+				m.loading = true
+				m.instances = nil
+				m.groups = nil
+				m.fetchErr = nil
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids))
+			}
+			return m, nil
+		}
+
 		// 디테일 화면에서는 esc/q 로만 뒤로
 		if m.screen == screenDetail {
 			switch msg.String() {
@@ -144,13 +224,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "d":
-				if m.view == viewEC2 {
-					inst := m.selectedInstance()
-					if inst != nil {
+				switch m.view {
+				case viewEC2:
+					if inst := m.selectedInstance(); inst != nil {
 						m.selectedInst = inst
+						m.selectedSG = nil
+						m.screen = screenDetail
+					}
+				case viewSG:
+					if sg := m.selectedSG_(); sg != nil {
+						m.selectedSG = sg
+						m.selectedInst = nil
 						m.screen = screenDetail
 					}
 				}
+				return m, nil
+			case "1", "2", "3", "4", "5", "6", "7", "8":
+				n := int(msg.String()[0]-'0') - 1
+				m.sortByIndex(n)
+				m.table = m.buildCurrentTable()
+				return m, nil
+			case "r":
+				m.loading = true
+				m.instances = nil
+				m.groups = nil
+				m.fetchErr = nil
+				ids := selectedRegionIDs(m.regions)
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids))
+			case "R":
+				m.screen = screenRegion
+				m.regionCursor = 0
 				return m, nil
 			case "/":
 				m.mode = modeSearch
@@ -247,6 +350,100 @@ func (m *Model) selectedInstance() *awsclient.Instance {
 	return nil
 }
 
+// selectedSG_ returns the SecurityGroup matching the currently highlighted table row.
+func (m *Model) selectedSG_() *awsclient.SecurityGroup {
+	row := m.table.SelectedRow()
+	if row == nil {
+		return nil
+	}
+	id := row[2] // Group ID column
+	for i := range m.groups {
+		if m.groups[i].GroupID == id {
+			return &m.groups[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) sortByIndex(n int) {
+	cols := ec2SortCols
+	if m.view == viewSG {
+		cols = sgSortCols
+	}
+	if n < 0 || n >= len(cols) {
+		return
+	}
+	col := cols[n]
+	if col == sortNone {
+		return
+	}
+	if m.sortBy == col {
+		// 같은 컬럼: asc → desc → 해제
+		if m.sortAsc {
+			m.sortAsc = false
+		} else {
+			m.sortBy = sortNone
+		}
+	} else {
+		m.sortBy = col
+		m.sortAsc = true
+	}
+}
+
+func (m *Model) sortedInstances() []awsclient.Instance {
+	instances := make([]awsclient.Instance, len(m.instances))
+	copy(instances, m.instances)
+	if m.sortBy == sortNone {
+		return instances
+	}
+	sort.Slice(instances, func(i, j int) bool {
+		a, b := instances[i], instances[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortState:
+			less = a.State < b.State
+		case sortType:
+			less = a.Type < b.Type
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return instances
+}
+
+func (m *Model) sortedGroups() []awsclient.SecurityGroup {
+	groups := make([]awsclient.SecurityGroup, len(m.groups))
+	copy(groups, m.groups)
+	if m.sortBy == sortNone {
+		return groups
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		a, b := groups[i], groups[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return groups
+}
+
 func (m *Model) applyCommand(cmd string) {
 	switch strings.TrimSpace(strings.ToLower(cmd)) {
 	case "ec2":
@@ -261,23 +458,47 @@ func (m *Model) applyCommand(cmd string) {
 func (m *Model) buildCurrentTable() table.Model {
 	switch m.view {
 	case viewSG:
-		return buildSGTable(filterSGRows(m.groups, m.filters), m.height)
+		return buildSGTable(filterSGRows(m.sortedGroups(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	default:
-		return buildEC2Table(filterEC2Rows(m.instances, m.filters), m.height)
+		return buildEC2Table(filterEC2Rows(m.sortedInstances(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
 	}
+}
+
+func (m *Model) maxProfileWidth() int {
+	const minWidth = 10
+	const maxWidth = 30
+	max := minWidth
+	for _, inst := range m.instances {
+		if len(inst.Profile) > max {
+			max = len(inst.Profile)
+		}
+	}
+	for _, sg := range m.groups {
+		if len(sg.Profile) > max {
+			max = len(sg.Profile)
+		}
+	}
+	if max > maxWidth {
+		max = maxWidth
+	}
+	return max + 1 // 여백 1칸
 }
 
 // --- EC2 table ---
 
-func buildEC2Table(rows []table.Row, height int) table.Model {
+func buildEC2Table(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
 	cols := []table.Column{
-		{Title: "Profile", Width: 18},
-		{Title: "Name", Width: 16},
-		{Title: "Instance ID", Width: 20},
-		{Title: "State", Width: 12},
-		{Title: "Type", Width: 10},
-		{Title: "Private IP", Width: 16},
-		{Title: "Public IP", Width: 16},
+		h(1, sortProfile,    "Profile",     profileWidth),
+		h(2, sortName,       "Name",        16),
+		h(3, sortInstanceID, "Instance ID", 20),
+		h(4, sortState,      "State",       12),
+		h(5, sortType,       "Type",        10),
+		h(6, sortPrivateIP,  "Private IP",  16),
+		h(7, sortPublicIP,   "Public IP",   16),
+		h(8, sortRegion,     "Region",      18),
 	}
 	return newTable(cols, rows, height)
 }
@@ -288,7 +509,7 @@ func filterEC2Rows(instances []awsclient.Instance, filters []string) []table.Row
 	}
 	var filtered []awsclient.Instance
 	for _, inst := range instances {
-		if matchAll(filters, inst.Profile, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP) {
+		if matchAll(filters, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP) {
 			filtered = append(filtered, inst)
 		}
 	}
@@ -298,22 +519,38 @@ func filterEC2Rows(instances []awsclient.Instance, filters []string) []table.Row
 func ec2Rows(instances []awsclient.Instance) []table.Row {
 	rows := make([]table.Row, len(instances))
 	for i, inst := range instances {
-		rows[i] = table.Row{inst.Profile, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.PublicIP}
+		rows[i] = table.Row{inst.Profile, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.PublicIP, inst.Region}
 	}
 	return rows
 }
 
 // --- SG table ---
 
-func buildSGTable(rows []table.Row, height int) table.Model {
+func buildSGTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
 	cols := []table.Column{
-		{Title: "Profile", Width: 18},
-		{Title: "Name", Width: 24},
-		{Title: "Group ID", Width: 22},
-		{Title: "VPC ID", Width: 22},
-		{Title: "Description", Width: 40},
+		h(1, sortProfile,     "Profile",     profileWidth),
+		h(2, sortName,        "Name",        22),
+		h(3, sortGroupID,     "Group ID",    22),
+		h(4, sortVpcID,       "VPC ID",      22),
+		h(5, sortNone,        "Description", 36),
+		h(6, sortRegion,      "Region",      18),
 	}
 	return newTable(cols, rows, height)
+}
+
+func colTitle(n int, col sortCol, title string, sortBy sortCol, sortAsc bool) string {
+	prefix := fmt.Sprintf("%d:", n)
+	if col != sortNone && col == sortBy {
+		arrow := "↑"
+		if !sortAsc {
+			arrow = "↓"
+		}
+		return prefix + title + " " + arrow
+	}
+	return prefix + title
 }
 
 func filterSGRows(groups []awsclient.SecurityGroup, filters []string) []table.Row {
@@ -322,7 +559,7 @@ func filterSGRows(groups []awsclient.SecurityGroup, filters []string) []table.Ro
 	}
 	var filtered []awsclient.SecurityGroup
 	for _, sg := range groups {
-		if matchAll(filters, sg.Profile, sg.Name, sg.GroupID, sg.VpcID, sg.Description) {
+		if matchAll(filters, sg.Profile, sg.Region, sg.Name, sg.GroupID, sg.VpcID, sg.Description) {
 			filtered = append(filtered, sg)
 		}
 	}
@@ -332,7 +569,7 @@ func filterSGRows(groups []awsclient.SecurityGroup, filters []string) []table.Ro
 func sgRows(groups []awsclient.SecurityGroup) []table.Row {
 	rows := make([]table.Row, len(groups))
 	for i, sg := range groups {
-		rows[i] = table.Row{sg.Profile, sg.Name, sg.GroupID, sg.VpcID, sg.Description}
+		rows[i] = table.Row{sg.Profile, sg.Name, sg.GroupID, sg.VpcID, sg.Description, sg.Region}
 	}
 	return rows
 }

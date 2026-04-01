@@ -10,15 +10,23 @@ import (
 )
 
 func fetchInstances() tea.Cmd {
+	return fetchInstancesWithRegions([]string{awsclient.DefaultRegion})
+}
+
+func fetchSecurityGroups() tea.Cmd {
+	return fetchSGWithRegions([]string{awsclient.DefaultRegion})
+}
+
+func fetchInstancesWithRegions(regions []string) tea.Cmd {
 	return func() tea.Msg {
-		instances, errs := awsclient.FetchAllInstances(context.Background())
+		instances, errs := awsclient.FetchAllInstances(context.Background(), regions)
 		return instancesLoadedMsg{instances: instances, errs: errs}
 	}
 }
 
-func fetchSecurityGroups() tea.Cmd {
+func fetchSGWithRegions(regions []string) tea.Cmd {
 	return func() tea.Msg {
-		groups, errs := awsclient.FetchAllSecurityGroups(context.Background())
+		groups, errs := awsclient.FetchAllSecurityGroups(context.Background(), regions)
 		return sgLoadedMsg{groups: groups, errs: errs}
 	}
 }

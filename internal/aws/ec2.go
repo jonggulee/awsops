@@ -13,6 +13,7 @@ import (
 
 type Instance struct {
 	Profile          string
+	Region           string
 	InstanceID       string
 	Name             string
 	State            string
@@ -33,23 +34,35 @@ type profileResult struct {
 	err       error
 }
 
-// FetchAllInstances fetches EC2 instances from all profiles concurrently.
-func FetchAllInstances(ctx context.Context) ([]Instance, []error) {
+// FetchAllInstances fetches EC2 instances from all profiles × regions concurrently.
+func FetchAllInstances(ctx context.Context, regions []string) ([]Instance, []error) {
 	profiles, err := LoadProfiles()
 	if err != nil {
 		return nil, []error{err}
 	}
 
-	results := make(chan profileResult, len(profiles))
+	type target struct {
+		profile string
+		region  string
+	}
+
+	var targets []target
+	for _, p := range profiles {
+		for _, r := range regions {
+			targets = append(targets, target{p, r})
+		}
+	}
+
+	results := make(chan profileResult, len(targets))
 	var wg sync.WaitGroup
 
-	for _, profile := range profiles {
+	for _, t := range targets {
 		wg.Add(1)
-		go func(p string) {
+		go func(p, r string) {
 			defer wg.Done()
-			instances, err := fetchInstances(ctx, p)
+			instances, err := fetchInstances(ctx, p, r)
 			results <- profileResult{instances: instances, err: err}
-		}(profile)
+		}(t.profile, t.region)
 	}
 
 	wg.Wait()
@@ -67,8 +80,8 @@ func FetchAllInstances(ctx context.Context) ([]Instance, []error) {
 	return all, errs
 }
 
-func fetchInstances(ctx context.Context, profile string) ([]Instance, error) {
-	client, err := NewProfileClient(ctx, profile)
+func fetchInstances(ctx context.Context, profile, region string) ([]Instance, error) {
+	client, err := NewProfileClient(ctx, profile, region)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +94,13 @@ func fetchInstances(ctx context.Context, profile string) ([]Instance, error) {
 	var instances []Instance
 	for _, reservation := range out.Reservations {
 		for _, inst := range reservation.Instances {
-			instances = append(instances, toInstance(profile, inst))
+			instances = append(instances, toInstance(profile, region, inst))
 		}
 	}
 	return instances, nil
 }
 
-func toInstance(profile string, inst types.Instance) Instance {
+func toInstance(profile, region string, inst types.Instance) Instance {
 	tags := make(map[string]string)
 	name := ""
 	for _, tag := range inst.Tags {
@@ -110,6 +123,7 @@ func toInstance(profile string, inst types.Instance) Instance {
 
 	return Instance{
 		Profile:          profile,
+		Region:           region,
 		InstanceID:       aws.ToString(inst.InstanceId),
 		Name:             name,
 		State:            string(inst.State.Name),

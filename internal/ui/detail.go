@@ -61,8 +61,26 @@ func renderDetail(inst *awsclient.Instance) string {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+
+		// 키 최대 길이 계산 (최대 36자 제한)
+		maxKeyLen := 0
 		for _, k := range keys {
-			b.WriteString(row(k, inst.Tags[k]))
+			if len(k) > maxKeyLen {
+				maxKeyLen = len(k)
+			}
+		}
+		const maxTagKeyWidth = 36
+		if maxKeyLen > maxTagKeyWidth {
+			maxKeyLen = maxTagKeyWidth
+		}
+		tagLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(maxKeyLen + 2)
+
+		for _, k := range keys {
+			displayKey := k
+			if len(k) > maxTagKeyWidth {
+				displayKey = k[:maxTagKeyWidth-1] + "…"
+			}
+			b.WriteString("  " + tagLabelStyle.Render(displayKey) + valueStyle.Render(inst.Tags[k]) + "\n")
 		}
 	}
 
@@ -89,10 +107,72 @@ func nameOrID(inst *awsclient.Instance) string {
 	return inst.InstanceID
 }
 
+func renderSGDetail(sg *awsclient.SecurityGroup) string {
+	if sg == nil {
+		return ""
+	}
+
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("SG › %s", sg.Name)) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", sg.Profile))
+	b.WriteString(row("Group ID", sg.GroupID))
+	b.WriteString(row("Name", sg.Name))
+	b.WriteString(row("Description", orDash(sg.Description)))
+	b.WriteString(row("VPC ID", orDash(sg.VpcID)))
+	b.WriteString(row("Region", sg.Region))
+
+	inbound := filterRules(sg.Rules, "inbound")
+	outbound := filterRules(sg.Rules, "outbound")
+
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Inbound Rules (%d)", len(inbound))) + "\n")
+	if len(inbound) == 0 {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		b.WriteString(renderRules(inbound))
+	}
+
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Outbound Rules (%d)", len(outbound))) + "\n")
+	if len(outbound) == 0 {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		b.WriteString(renderRules(outbound))
+	}
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
+func filterRules(rules []awsclient.SGRule, direction string) []awsclient.SGRule {
+	var filtered []awsclient.SGRule
+	for _, r := range rules {
+		if r.Direction == direction {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func renderRules(rules []awsclient.SGRule) string {
+	ruleProtoStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(8)
+	rulePortStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(12)
+	ruleSourceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
+
+	var b strings.Builder
+	for _, r := range rules {
+		b.WriteString("  " +
+			ruleProtoStyle.Render(r.ProtocolStr()) +
+			rulePortStyle.Render(r.PortRange()) +
+			ruleSourceStyle.Render(r.Source) + "\n")
+	}
+	return b.String()
+}
+
+// coloredState is used in the detail view only.
 func coloredState(state string) string {
 	switch state {
-	case "running":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(state)
 	case "stopped":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(state)
 	case "pending", "stopping":
@@ -101,3 +181,4 @@ func coloredState(state string) string {
 		return state
 	}
 }
+
