@@ -2,15 +2,71 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
+// --- styles ---
+
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).PaddingLeft(1)
-	searchStyle = lipgloss.NewStyle().PaddingLeft(1)
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).PaddingLeft(1)
-	helpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(1)
+	// 상단 헤더 바 (보라색 배경)
+	headerBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("57")).
+			Foreground(lipgloss.Color("255")).
+			Bold(true).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	headerAppStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("57")).
+			Foreground(lipgloss.Color("226")).
+			Bold(true)
+
+	headerDimStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("57")).
+			Foreground(lipgloss.Color("189"))
+
+	// 브레드크럼 바 (어두운 배경)
+	crumbBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(lipgloss.Color("255")).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	crumbActiveStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("237")).
+				Foreground(lipgloss.Color("226")).
+				Bold(true)
+
+	crumbFilterStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("237")).
+				Foreground(lipgloss.Color("214"))
+
+	// 하단 힌트 바
+	hintBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(lipgloss.Color("245")).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	hintKeyStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(lipgloss.Color("255")).
+			Bold(true)
+
+	// 입력 줄
+	inputStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")).
+			PaddingLeft(1)
+
+	errStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("9")).
+			PaddingLeft(1)
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			PaddingLeft(1)
 )
 
 func (m Model) View() string {
@@ -18,21 +74,117 @@ func (m Model) View() string {
 		return fmt.Sprintf("\n  %s Fetching AWS resources...", m.spinner.View())
 	}
 
-	title := titleStyle.Render("awsops — EC2 Instances")
-
-	var searchLine string
-	if m.mode == modeSearch {
-		searchLine = searchStyle.Render("/ " + m.search.View())
-	} else if m.search.Value() != "" {
-		searchLine = searchStyle.Render("/ " + m.search.Value() + " (esc: clear)")
-	} else {
-		searchLine = helpStyle.Render("/ search  ↑/↓ navigate  q quit")
+	if m.screen == screenDetail {
+		return renderDetail(m.selectedInst)
 	}
 
-	errMsg := ""
+	var sections []string
+
+	sections = append(sections, m.renderHeaderBar())
+	sections = append(sections, m.renderCrumbBar())
+
+	if m.mode == modeSearch || m.mode == modeCommand {
+		sections = append(sections, m.renderInputLine())
+	}
+
 	if len(m.fetchErr) > 0 {
-		errMsg = "\n" + errStyle.Render(fmt.Sprintf("⚠ %d profile(s) failed to load", len(m.fetchErr)))
+		sections = append(sections, errStyle.Render(fmt.Sprintf("⚠ %d profile(s) failed to load", len(m.fetchErr))))
 	}
 
-	return fmt.Sprintf("%s\n%s%s\n%s", title, searchLine, errMsg, m.table.View())
+	sections = append(sections, m.table.View())
+	sections = append(sections, m.renderHintBar())
+
+	return strings.Join(sections, "\n")
+}
+
+func (m Model) renderHeaderBar() string {
+	left := headerAppStyle.Render("awsops")
+
+	profileCount := fmt.Sprintf("%d profiles loaded", m.profileCount())
+	right := headerDimStyle.Render(profileCount)
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+
+	content := left + strings.Repeat(" ", gap) + right
+	return headerBarStyle.Width(m.width).Render(content)
+}
+
+func (m Model) renderCrumbBar() string {
+	// "ec2" 또는 "sg" 현재 뷰
+	view := crumbActiveStyle.Render(viewNames[m.view])
+
+	// 필터 표시
+	filterPart := ""
+	if len(m.filters) > 0 {
+		filterPart = crumbBarStyle.Render(" › ") +
+			crumbFilterStyle.Render("["+strings.Join(m.filters, " & ")+"]")
+	}
+
+	// 행 수
+	rowCount := crumbBarStyle.Render(fmt.Sprintf("  (%d)", len(m.table.Rows())))
+
+	content := view + filterPart + rowCount
+	padding := m.width - lipgloss.Width(content) - 1
+	if padding < 0 {
+		padding = 0
+	}
+	return crumbBarStyle.Width(m.width).Render(
+		lipgloss.NewStyle().Background(lipgloss.Color("237")).Render(content),
+	)
+}
+
+func (m Model) renderInputLine() string {
+	switch m.mode {
+	case modeSearch:
+		prefix := ""
+		if len(m.filters) > 0 {
+			prefix = "[" + strings.Join(m.filters, " & ") + "] & "
+		}
+		return inputStyle.Render("/ " + prefix + m.input.View())
+	case modeCommand:
+		return inputStyle.Render(": " + m.input.View())
+	}
+	return ""
+}
+
+func (m Model) renderHintBar() string {
+	var hints []string
+	if m.view == viewEC2 {
+		hints = []string{
+			hintItem("/", "Search"),
+			hintItem(":", "Command"),
+			hintItem("d", "Describe"),
+			hintItem("esc", "Clear"),
+			hintItem("↑/↓", "Navigate"),
+			hintItem("q", "Quit"),
+		}
+	} else {
+		hints = []string{
+			hintItem("/", "Search"),
+			hintItem(":", "Command"),
+			hintItem("esc", "Clear"),
+			hintItem("↑/↓", "Navigate"),
+			hintItem("q", "Quit"),
+		}
+	}
+	content := strings.Join(hints, hintBarStyle.Render("  "))
+	return hintBarStyle.Width(m.width).Render(content)
+}
+
+func hintItem(key, action string) string {
+	return hintKeyStyle.Render("<"+key+">") + hintBarStyle.Render(" "+action)
+}
+
+func (m Model) profileCount() int {
+	seen := map[string]struct{}{}
+	for _, inst := range m.instances {
+		seen[inst.Profile] = struct{}{}
+	}
+	for _, sg := range m.groups {
+		seen[sg.Profile] = struct{}{}
+	}
+	return len(seen)
 }

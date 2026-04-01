@@ -16,6 +16,13 @@ func fetchInstances() tea.Cmd {
 	}
 }
 
+func fetchSecurityGroups() tea.Cmd {
+	return func() tea.Msg {
+		groups, errs := awsclient.FetchAllSecurityGroups(context.Background())
+		return sgLoadedMsg{groups: groups, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()
