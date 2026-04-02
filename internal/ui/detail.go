@@ -22,7 +22,7 @@ var (
 	nameTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // 이름 힌트: 연두색
 )
 
-func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool) string {
+func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool, typeSpecs map[string]awsclient.InstanceTypeSpec) string {
 	if inst == nil {
 		return ""
 	}
@@ -37,7 +37,19 @@ func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCu
 	b.WriteString(row("Instance ID", inst.InstanceID))
 	b.WriteString(row("Name", orDash(inst.Name)))
 	b.WriteString(row("State", coloredState(inst.State)))
-	b.WriteString(row("Instance Type", inst.Type))
+	instTypeVal := inst.Type
+	if spec, ok := typeSpecs[inst.Type]; ok {
+		mem := spec.MemoryGiB
+		var memStr string
+		if mem == float64(int(mem)) {
+			memStr = fmt.Sprintf("%d GiB", int(mem))
+		} else {
+			memStr = fmt.Sprintf("%.1f GiB", mem)
+		}
+		hint := fmt.Sprintf("%d vCPU, %s", spec.VCPU, memStr)
+		instTypeVal += "  " + nameTagStyle.Render("["+hint+"]")
+	}
+	b.WriteString(row("Instance Type", instTypeVal))
 	b.WriteString(row("Launch Time", inst.LaunchTimeStr()))
 
 	// Network
@@ -553,3 +565,216 @@ func coloredState(state string) string {
 	}
 }
 
+
+func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
+	if cluster == nil {
+		return ""
+	}
+
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("EKS › %s", cluster.Name)) + "\n")
+
+	// General
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", cluster.Profile))
+	b.WriteString(row("Name", cluster.Name))
+	b.WriteString(row("Status", coloredEKSStatus(cluster.Status)))
+	b.WriteString(row("Version", cluster.Version))
+	b.WriteString(row("Platform Version", orDash(cluster.PlatformVersion)))
+	b.WriteString(row("Created At", cluster.CreatedAtStr()))
+
+	// Network
+	b.WriteString(sectionStyle.Render("Network") + "\n")
+	b.WriteString(row("VPC ID", withName(cluster.VpcID, vpcName)))
+	b.WriteString(row("Cluster SG", orDash(cluster.ClusterSecurityGroupID)))
+
+	accessParts := []string{}
+	if cluster.PublicAccess {
+		accessParts = append(accessParts, "Public")
+	}
+	if cluster.PrivateAccess {
+		accessParts = append(accessParts, "Private")
+	}
+	access := "-"
+	if len(accessParts) > 0 {
+		access = strings.Join(accessParts, " + ")
+	}
+	b.WriteString(row("API Access", access))
+	b.WriteString(row("Endpoint", orDash(cluster.Endpoint)))
+
+	nodeCount := len(cluster.Nodes)
+
+	if len(cluster.SubnetIDs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Subnets (%d)", len(cluster.SubnetIDs))) + "\n")
+		for i, id := range cluster.SubnetIDs {
+			idx := nodeCount + i
+			b.WriteString(rowMaybeActive(fmt.Sprintf("Subnet %d", i+1), withName(id, subnetNames[id]), detailCursor == idx))
+		}
+	}
+
+	if len(cluster.SecurityGroupIDs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(cluster.SecurityGroupIDs))) + "\n")
+		for i, id := range cluster.SecurityGroupIDs {
+			idx := nodeCount + len(cluster.SubnetIDs) + i
+			name := sgNames[id]
+			b.WriteString(rowMaybeActive("SG "+fmt.Sprintf("%d", i+1), withName(id, name), detailCursor == idx))
+		}
+	}
+
+	// IAM
+	b.WriteString(sectionStyle.Render("IAM") + "\n")
+	b.WriteString(row("Role ARN", orDash(cluster.RoleARN)))
+
+	// Nodes (EC2 instances)
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Nodes (%d)", len(cluster.Nodes))) + "\n")
+	if len(cluster.Nodes) == 0 {
+		b.WriteString("  " + tagStyle.Render("No nodes found") + "\n")
+	} else {
+		// 노드 커서: detailCursor가 노드 범위일 때만 활성화
+		nodeCursor := -1
+		if detailCursor >= 0 && detailCursor < nodeCount {
+			nodeCursor = detailCursor
+		}
+		b.WriteString(renderNodeTable(cluster.Nodes, nodeCursor))
+	}
+
+	// Node Groups
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Node Groups (%d)", len(cluster.Nodegroups))) + "\n")
+	if len(cluster.Nodegroups) == 0 {
+		b.WriteString("  " + tagStyle.Render("No node groups") + "\n")
+	} else {
+		for _, ng := range cluster.Nodegroups {
+			b.WriteString(renderNodegroupBlock(ng))
+		}
+	}
+
+	// Tags
+	b.WriteString(sectionStyle.Render("Tags") + "\n")
+	b.WriteString(renderTags(cluster.Tags))
+
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open detail    ↑/↓  navigate"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  navigate"
+	default:
+		hint = "esc / q  back to list    ↑/↓  navigate"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
+func renderNodeTable(nodes []awsclient.EKSNode, cursor int) string {
+	var b strings.Builder
+
+	const (
+		wID    = 22
+		wName  = 20
+		wState = 12
+		wType  = 14
+		wIP    = 16
+		wAZ    = 20
+		wNG    = 22
+	)
+
+	hStyle      := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
+	vStyle      := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57"))
+	sepStr      := "  " + strings.Repeat("─", wID+wName+wState+wType+wIP+wAZ+wNG) + "\n"
+
+	col := func(s string, w int) string {
+		if len(s) >= w {
+			return s[:w-1] + " "
+		}
+		return s + strings.Repeat(" ", w-len(s))
+	}
+
+	// 헤더
+	b.WriteString("  " +
+		hStyle.Render(col("Instance ID", wID)) +
+		hStyle.Render(col("Name", wName)) +
+		hStyle.Render(col("State", wState)) +
+		hStyle.Render(col("Type", wType)) +
+		hStyle.Render(col("Private IP", wIP)) +
+		hStyle.Render(col("AZ", wAZ)) +
+		hStyle.Render(col("Node Group", wNG)) + "\n")
+	b.WriteString(sepStr)
+
+	for i, node := range nodes {
+		stateStr := node.State
+		stateColor := lipgloss.Color("255")
+		switch node.State {
+		case "running":
+			stateColor = lipgloss.Color("10")
+		case "stopped", "terminated":
+			stateColor = lipgloss.Color("9")
+		case "pending", "stopping":
+			stateColor = lipgloss.Color("11")
+		}
+
+		if i == cursor {
+			// 커서 행: 배경 하이라이트 (테이블과 동일한 보라색)
+			cs := cursorStyle
+			b.WriteString("> " +
+				cs.Render(col(node.InstanceID, wID)) +
+				cs.Render(col(orDash(node.Name), wName)) +
+				cs.Foreground(stateColor).Render(col(stateStr, wState)) +
+				cs.Foreground(lipgloss.Color("229")).Render(col(node.InstanceType, wType)) +
+				cs.Render(col(orDash(node.PrivateIP), wIP)) +
+				cs.Render(col(node.AvailabilityZone, wAZ)) +
+				cs.Render(col(orDash(node.NodegroupName), wNG)) + "\n")
+		} else {
+			stateRendered := lipgloss.NewStyle().Foreground(stateColor).Render(col(stateStr, wState))
+			b.WriteString("  " +
+				vStyle.Render(col(node.InstanceID, wID)) +
+				vStyle.Render(col(orDash(node.Name), wName)) +
+				stateRendered +
+				vStyle.Render(col(node.InstanceType, wType)) +
+				vStyle.Render(col(orDash(node.PrivateIP), wIP)) +
+				vStyle.Render(col(node.AvailabilityZone, wAZ)) +
+				vStyle.Render(col(orDash(node.NodegroupName), wNG)) + "\n")
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func renderNodegroupBlock(ng awsclient.EKSNodegroup) string {
+	var b strings.Builder
+
+	ngNameStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
+	ngLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(18).PaddingLeft(2)
+	ngValStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+
+	ngRow := func(label, val string) string {
+		return ngLabelStyle.Render(label) + ngValStyle.Render(val) + "\n"
+	}
+
+	b.WriteString("  " + ngNameStyle.Render("▸ "+ng.Name) + "  " +
+		coloredEKSStatus(ng.Status) + "\n")
+	b.WriteString(ngRow("Version",    ng.Version))
+	b.WriteString(ngRow("Capacity",   ng.CapacityType))
+	b.WriteString(ngRow("Instance",   strings.Join(ng.InstanceTypes, ", ")))
+	b.WriteString(ngRow("AMI Type",   ng.AMIType))
+	b.WriteString(ngRow("Disk (GB)",  fmt.Sprintf("%d", ng.DiskSize)))
+	b.WriteString(ngRow("Scaling",    fmt.Sprintf("desired %d  (min %d – max %d)", ng.DesiredSize, ng.MinSize, ng.MaxSize)))
+	b.WriteString(ngRow("Created At", ng.CreatedAtStr()))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+func coloredEKSStatus(status string) string {
+	switch status {
+	case "ACTIVE":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(status)
+	case "CREATING", "UPDATING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(status)
+	case "DELETING", "FAILED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(status)
+	default:
+		return status
+	}
+}

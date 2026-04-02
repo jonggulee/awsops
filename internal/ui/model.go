@@ -19,6 +19,11 @@ type instancesLoadedMsg struct {
 	errs      []error
 }
 
+type instanceTypeSpecsLoadedMsg struct {
+	specs map[string]awsclient.InstanceTypeSpec
+	err   error
+}
+
 type sgLoadedMsg struct {
 	groups []awsclient.SecurityGroup
 	errs   []error
@@ -59,6 +64,11 @@ type certsLoadedMsg struct {
 	errs  []error
 }
 
+type eksLoadedMsg struct {
+	clusters []awsclient.EKSCluster
+	errs     []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -79,6 +89,7 @@ const (
 	viewTGW
 	viewACM
 	viewENI
+	viewEKS
 )
 
 type screen int
@@ -98,6 +109,7 @@ var viewNames = map[viewType]string{
 	viewTGW:    "tgw",
 	viewACM:    "acm",
 	viewENI:    "eni",
+	viewEKS:    "eks",
 }
 
 // --- sort ---
@@ -130,6 +142,7 @@ const (
 	sortENIID
 	sortDescription
 	sortInterfaceType
+	sortVersion
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -153,7 +166,11 @@ var acmSortCols = []sortCol{sortProfile, sortDomainName, sortCertStatus, sortTyp
 // ENI:    1=Profile 2=ENIID 3=Name 4=Status 5=Type 6=PrivateIP 7=InstanceID 8=VpcID 9=SubnetID 10=Region
 var eniSortCols = []sortCol{sortProfile, sortENIID, sortName, sortState, sortInterfaceType, sortPrivateIP, sortInstanceID, sortVpcID, sortSubnetID, sortRegion}
 
+// EKS:    1=Profile 2=Name 3=Status 4=Version 5=VpcID 6=- 7=Region
+var eksSortCols = []sortCol{sortProfile, sortName, sortState, sortVersion, sortVpcID, sortNone, sortRegion}
+
 var sortColNames = map[sortCol]string{
+	sortVersion: "Version",
 	sortDomainName: "Domain",
 	sortExpiry:     "Expiry",
 	sortCertStatus: "Status",
@@ -185,6 +202,7 @@ type detailSnapshot struct {
 	selectedSG     *awsclient.SecurityGroup
 	selectedVPC    *awsclient.VPC
 	selectedSubnet *awsclient.Subnet
+	selectedEKS    *awsclient.EKSCluster
 	detailScroll   int
 	detailCursor   int
 }
@@ -248,6 +266,10 @@ type Model struct {
 	displayedCerts        []awsclient.Certificate
 	displayedENIs         []awsclient.ENI
 	selectedENI           *awsclient.ENI
+	eksClusters           []awsclient.EKSCluster
+	displayedEKS          []awsclient.EKSCluster
+	selectedEKS           *awsclient.EKSCluster
+	instanceTypeSpecs     map[string]awsclient.InstanceTypeSpec
 }
 
 func New() Model {
@@ -281,6 +303,7 @@ func (m Model) Init() tea.Cmd {
 		fetchAccountIDs(),
 		fetchENIsWithRegions(regions),
 		fetchCertificatesWithRegions(regions),
+		fetchEKSWithRegions(regions),
 	)
 }
 
@@ -304,6 +327,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = len(m.groups) == 0 && len(m.instances) == 0
 		if !m.loading {
 			m.table = m.buildCurrentTable()
+		}
+		return m, fetchInstanceTypeSpecs(m.instances)
+
+	case instanceTypeSpecsLoadedMsg:
+		if msg.err == nil && msg.specs != nil {
+			m.instanceTypeSpecs = msg.specs
 		}
 
 	case sgLoadedMsg:
@@ -340,6 +369,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case certsLoadedMsg:
 		m.certs = msg.certs
 		m.fetchErr = append(m.fetchErr, msg.errs...)
+
+	case eksLoadedMsg:
+		m.eksClusters = msg.clusters
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
 
 	case routeTablesLoadedMsg:
 		m.routeTables = msg.tables
@@ -423,8 +459,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.routeTables = nil
 				m.enis = nil
 				m.certs = nil
+				m.eksClusters = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -614,6 +651,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedSG = prev.selectedSG
 					m.selectedVPC = prev.selectedVPC
 					m.selectedSubnet = prev.selectedSubnet
+					m.selectedEKS = prev.selectedEKS
 					m.detailScroll = prev.detailScroll
 					m.detailCursor = prev.detailCursor
 				} else {
@@ -621,6 +659,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedInst = nil
 					m.selectedTGWAtt = nil
 					m.selectedCert = nil
+					m.selectedENI = nil
+					m.selectedEKS = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -642,11 +682,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.navigateFromDetail()
 			case "k":
-				if m.detailScroll > 0 {
+				if m.selectedEKS == nil && m.detailScroll > 0 {
 					m.detailScroll--
 				}
 			case "j":
-				if m.detailScroll < m.detailMaxScroll() {
+				if m.selectedEKS == nil && m.detailScroll < m.detailMaxScroll() {
 					m.detailScroll++
 				}
 			case "pgup":
@@ -668,7 +708,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
-			case "d":
+			case "d", "enter":
 				switch m.view {
 				case viewEC2:
 					if inst := m.selectedInstance(); inst != nil {
@@ -733,6 +773,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = -1
 						m.detailHistory = nil
 					}
+				case viewEKS:
+					if cluster := m.selectedEKS_(); cluster != nil {
+						m.selectedEKS = cluster
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI = nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
 				}
 				return m, nil
 			case "c":
@@ -775,8 +824,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.routeTables = nil
 				m.enis = nil
 				m.certs = nil
+				m.eksClusters = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids))
 			case "R":
 				// 취소 시 복원할 수 있도록 현재 상태 저장
 				prev := make([]regionEntry, len(m.regions))
@@ -850,12 +900,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue("")
 				m.input.Blur()
 				return m, nil
-			case "up", "k":
+			case "up":
 				if m.commandCursor > 0 {
 					m.commandCursor--
 				}
 				return m, nil
-			case "down", "j":
+			case "down":
 				if m.commandCursor < len(items)-1 {
 					m.commandCursor++
 				}
@@ -904,11 +954,72 @@ func (m *Model) detailInteractiveFieldCount() int {
 	if m.selectedInst != nil {
 		return 2 + len(m.selectedInst.SecurityGroups)
 	}
+	if m.selectedEKS != nil {
+		return len(m.selectedEKS.Nodes) + len(m.selectedEKS.SubnetIDs) + len(m.selectedEKS.SecurityGroupIDs)
+	}
 	return 0
 }
 
 // navigateFromDetail navigates to the resource pointed to by the current detailCursor.
 func (m *Model) navigateFromDetail() {
+	// EKS 노드 → EC2 인스턴스 상세 진입
+	if m.selectedEKS != nil && m.detailCursor >= 0 {
+		eks := m.selectedEKS
+		nodeCount   := len(eks.Nodes)
+		subnetCount := len(eks.SubnetIDs)
+		snapshot := detailSnapshot{
+			selectedEKS:  eks,
+			detailScroll: m.detailScroll,
+			detailCursor: m.detailCursor,
+		}
+
+		switch {
+		case m.detailCursor < nodeCount:
+			// 노드 → EC2 인스턴스 상세
+			targetID := eks.Nodes[m.detailCursor].InstanceID
+			for i := range m.instances {
+				if m.instances[i].InstanceID == targetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedInst = &m.instances[i]
+					m.selectedEKS = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return
+				}
+			}
+		case m.detailCursor < nodeCount+subnetCount:
+			// 서브넷 상세
+			subnetID := eks.SubnetIDs[m.detailCursor-nodeCount]
+			for i := range m.subnets {
+				if m.subnets[i].SubnetID == subnetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSubnet = &m.subnets[i]
+					m.selectedEKS = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return
+				}
+			}
+		default:
+			// SG 상세
+			sgIdx := m.detailCursor - nodeCount - subnetCount
+			if sgIdx < len(eks.SecurityGroupIDs) {
+				sgID := eks.SecurityGroupIDs[sgIdx]
+				for i := range m.groups {
+					if m.groups[i].GroupID == sgID {
+						m.detailHistory = append(m.detailHistory, snapshot)
+						m.selectedSG = &m.groups[i]
+						m.selectedEKS = nil
+						m.detailScroll = 0
+						m.detailCursor = -1
+						return
+					}
+				}
+			}
+		}
+		return
+	}
+
 	if m.selectedInst == nil || m.detailCursor < 0 {
 		return
 	}
@@ -1071,6 +1182,14 @@ func (m *Model) selectedENI_() *awsclient.ENI {
 	return nil
 }
 
+func (m *Model) selectedEKS_() *awsclient.EKSCluster {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedEKS) {
+		return &m.displayedEKS[c]
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
 	switch m.view {
@@ -1086,6 +1205,8 @@ func (m *Model) sortByIndex(n int) {
 		cols = acmSortCols
 	case viewENI:
 		cols = eniSortCols
+	case viewEKS:
+		cols = eksSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return

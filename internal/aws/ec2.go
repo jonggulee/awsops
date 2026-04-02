@@ -163,6 +163,61 @@ func (inst Instance) LaunchTimeStr() string {
 	return inst.LaunchTime.In(time.Local).Format("2006-01-02 15:04:05")
 }
 
+// InstanceTypeSpec holds vCPU and memory info fetched from the AWS API.
+type InstanceTypeSpec struct {
+	VCPU      int32
+	MemoryGiB float64
+}
+
+// FetchInstanceTypeSpecs fetches vCPU/memory for the given set of instance types.
+// Uses a single region+profile (default) since instance type specs are global.
+func FetchInstanceTypeSpecs(ctx context.Context, instanceTypes []string) (map[string]InstanceTypeSpec, error) {
+	if len(instanceTypes) == 0 {
+		return nil, nil
+	}
+
+	profiles, err := LoadProfiles()
+	if err != nil || len(profiles) == 0 {
+		return nil, fmt.Errorf("no profiles available: %w", err)
+	}
+	client, err := NewProfileClient(ctx, profiles[0], DefaultRegion)
+	if err != nil {
+		return nil, err
+	}
+
+	itTypes := make([]types.InstanceType, len(instanceTypes))
+	for i, t := range instanceTypes {
+		itTypes[i] = types.InstanceType(t)
+	}
+
+	specs := make(map[string]InstanceTypeSpec, len(instanceTypes))
+	var nextToken *string
+	for {
+		out, err := client.EC2.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{
+			InstanceTypes: itTypes,
+			NextToken:     nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("DescribeInstanceTypes: %w", err)
+		}
+		for _, it := range out.InstanceTypes {
+			spec := InstanceTypeSpec{}
+			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil {
+				spec.VCPU = *it.VCpuInfo.DefaultVCpus
+			}
+			if it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
+				spec.MemoryGiB = float64(*it.MemoryInfo.SizeInMiB) / 1024
+			}
+			specs[string(it.InstanceType)] = spec
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+	}
+	return specs, nil
+}
+
 func (inst Instance) TagsStr() string {
 	if len(inst.Tags) == 0 {
 		return "-"

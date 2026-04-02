@@ -77,6 +77,31 @@ func fetchCertificatesWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchInstanceTypeSpecs(instances []awsclient.Instance) tea.Cmd {
+	// 사용 중인 타입만 unique하게 추출
+	seen := map[string]struct{}{}
+	for _, inst := range instances {
+		if inst.Type != "" {
+			seen[inst.Type] = struct{}{}
+		}
+	}
+	types := make([]string, 0, len(seen))
+	for t := range seen {
+		types = append(types, t)
+	}
+	return func() tea.Msg {
+		specs, err := awsclient.FetchInstanceTypeSpecs(context.Background(), types)
+		return instanceTypeSpecsLoadedMsg{specs: specs, err: err}
+	}
+}
+
+func fetchEKSWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		clusters, errs := awsclient.FetchAllEKSClusters(context.Background(), regions)
+		return eksLoadedMsg{clusters: clusters, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

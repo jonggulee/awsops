@@ -218,13 +218,15 @@ func (m Model) currentDetailContent() string {
 		return renderCertDetail(m.selectedCert)
 	case m.selectedENI != nil:
 		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap())
+	case m.selectedEKS != nil:
+		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {
 			vpcName = m.lookupVPCName(m.selectedInst.VpcID)
 			subnetName = m.lookupSubnetName(m.selectedInst.SubnetID)
 		}
-		return renderDetail(m.selectedInst, vpcName, subnetName, m.detailCursor, len(m.detailHistory) > 0)
+		return renderDetail(m.selectedInst, vpcName, subnetName, m.detailCursor, len(m.detailHistory) > 0, m.instanceTypeSpecs)
 	}
 }
 
@@ -250,6 +252,14 @@ func (m Model) buildSGNameMap() map[string]string {
 	out := make(map[string]string, len(m.groups))
 	for _, sg := range m.groups {
 		out[sg.GroupID] = sg.Name
+	}
+	return out
+}
+
+func (m Model) buildSubnetNameMap() map[string]string {
+	out := make(map[string]string, len(m.subnets))
+	for _, s := range m.subnets {
+		out[s.SubnetID] = s.Name
 	}
 	return out
 }
