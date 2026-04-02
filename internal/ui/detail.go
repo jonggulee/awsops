@@ -273,6 +273,51 @@ func renderSubnetDetail(subnet *awsclient.Subnet) string {
 	return b.String()
 }
 
+func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map[string]string) string {
+	if eni == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	title := eni.ENIID
+	if eni.Name != "" {
+		title = eni.Name + "  " + nameTagStyle.Render("["+eni.ENIID+"]")
+	}
+	b.WriteString(detailTitleStyle.Render("EC2  ›  Network Interfaces  ›  "+title) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile",    eni.Profile))
+	b.WriteString(row("ENI ID",     eni.ENIID))
+	if eni.Name != "" {
+		b.WriteString(row("Name", eni.Name))
+	}
+	b.WriteString(row("Description", orDash(eni.Description)))
+	b.WriteString(row("Status",      eni.Status))
+	b.WriteString(row("Type",        eni.InterfaceType))
+	b.WriteString(row("Region",      eni.Region))
+
+	b.WriteString(sectionStyle.Render("Network") + "\n")
+	b.WriteString(row("Private IP", orDash(eni.PrivateIP)))
+	b.WriteString(row("VPC ID",     withName(eni.VpcID, vpcName)))
+	b.WriteString(row("Subnet ID",  withName(eni.SubnetID, subnetName)))
+
+	b.WriteString(sectionStyle.Render("Attached Resource") + "\n")
+	if eni.InstanceID != "" {
+		b.WriteString(row("Instance ID", eni.InstanceID))
+	} else {
+		b.WriteString("  " + tagStyle.Render("Not attached") + "\n")
+	}
+
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(eni.SecurityGroupIDs))) + "\n")
+	for _, sgID := range eni.SecurityGroupIDs {
+		name := sgNames[sgID]
+		b.WriteString("  " + valueStyle.Render(withName(sgID, name)) + "\n")
+	}
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
 func renderCertDetail(cert *awsclient.Certificate) string {
 	if cert == nil {
 		return ""

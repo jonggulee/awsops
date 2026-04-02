@@ -216,6 +216,8 @@ func (m Model) currentDetailContent() string {
 		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
 	case m.selectedCert != nil:
 		return renderCertDetail(m.selectedCert)
+	case m.selectedENI != nil:
+		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap())
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {

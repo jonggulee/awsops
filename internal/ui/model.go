@@ -78,6 +78,7 @@ const (
 	viewSubnet
 	viewTGW
 	viewACM
+	viewENI
 )
 
 type screen int
@@ -96,6 +97,7 @@ var viewNames = map[viewType]string{
 	viewSubnet: "subnet",
 	viewTGW:    "tgw",
 	viewACM:    "acm",
+	viewENI:    "eni",
 }
 
 // --- sort ---
@@ -125,6 +127,9 @@ const (
 	sortDomainName
 	sortExpiry
 	sortCertStatus
+	sortENIID
+	sortDescription
+	sortInterfaceType
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -144,6 +149,9 @@ var tgwSortCols = []sortCol{sortProfile, sortTgwID, sortAttachmentID, sortResour
 
 // ACM:    1=Profile 2=DomainName 3=Status 4=Type 5=Expiry 6=Region
 var acmSortCols = []sortCol{sortProfile, sortDomainName, sortCertStatus, sortType, sortExpiry, sortRegion}
+
+// ENI:    1=Profile 2=ENIID 3=Name 4=Status 5=Type 6=PrivateIP 7=InstanceID 8=VpcID 9=SubnetID 10=Region
+var eniSortCols = []sortCol{sortProfile, sortENIID, sortName, sortState, sortInterfaceType, sortPrivateIP, sortInstanceID, sortVpcID, sortSubnetID, sortRegion}
 
 var sortColNames = map[sortCol]string{
 	sortDomainName: "Domain",
@@ -238,6 +246,8 @@ type Model struct {
 	displayedSubnets      []awsclient.Subnet
 	displayedAttachments  []awsclient.TGWAttachment
 	displayedCerts        []awsclient.Certificate
+	displayedENIs         []awsclient.ENI
+	selectedENI           *awsclient.ENI
 }
 
 func New() Model {
@@ -708,7 +718,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case viewACM:
 					if cert := m.selectedCert_(); cert != nil {
 						m.selectedCert = cert
-						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt = nil, nil, nil, nil, nil
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedENI = nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
+				case viewENI:
+					if eni := m.selectedENI_(); eni != nil {
+						m.selectedENI = eni
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert = nil, nil, nil, nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
 						m.detailCursor = -1
@@ -1044,6 +1063,14 @@ func (m *Model) selectedCert_() *awsclient.Certificate {
 	return nil
 }
 
+func (m *Model) selectedENI_() *awsclient.ENI {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedENIs) {
+		return &m.displayedENIs[c]
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
 	switch m.view {
@@ -1057,6 +1084,8 @@ func (m *Model) sortByIndex(n int) {
 		cols = tgwSortCols
 	case viewACM:
 		cols = acmSortCols
+	case viewENI:
+		cols = eniSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return

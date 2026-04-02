@@ -14,18 +14,20 @@ type resourceItem struct {
 }
 
 var pickerResources = []resourceItem{
-	{"Instances",        "ec2",    "EC2"},
-	{"Security Groups",  "sg",     "EC2"},
-	{"Your VPCs",        "vpc",    "VPC"},
-	{"Subnets",          "subnet", "VPC"},
-	{"Transit Gateways", "tgw",    "VPC"},
-	{"Certificates",     "acm",    "ACM"},
+	{"Instances",          "ec2",    "EC2"},
+	{"Security Groups",    "sg",     "EC2"},
+	{"Network Interfaces", "eni",    "EC2"},
+	{"Your VPCs",          "vpc",    "VPC"},
+	{"Subnets",            "subnet", "VPC"},
+	{"Transit Gateways",   "tgw",    "VPC"},
+	{"Certificates",       "acm",    "ACM"},
 }
 
 // viewBreadcrumb maps a view to its "Service > Resource" label for the crumb bar.
 var viewBreadcrumb = map[viewType]string{
 	viewEC2:    "EC2  ›  Instances",
 	viewSG:     "EC2  ›  Security Groups",
+	viewENI:    "EC2  ›  Network Interfaces",
 	viewVPC:    "VPC  ›  Your VPCs",
 	viewSubnet: "VPC  ›  Subnets",
 	viewTGW:    "VPC  ›  Transit Gateways",
@@ -38,7 +40,9 @@ var (
 	navPickerCursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
 	navActiveStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))  // 현재 뷰
 	navInputStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).PaddingLeft(1)
-	navNoMatchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(4)
+	navCmdStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	navCmdActiveStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	navNoMatchStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(4)
 )
 
 // filteredPickerItems returns items matching the query (empty = all).
@@ -81,7 +85,7 @@ func renderResourcePicker(m Model) string {
 				if lastGroup != "" {
 					listLines = append(listLines, "")
 				}
-				listLines = append(listLines, "  "+navGroupStyle.Render("─ "+item.group+" ─"))
+				listLines = append(listLines, "  "+navGroupStyle.Render(item.group))
 				lastGroup = item.group
 			}
 
@@ -90,22 +94,26 @@ func renderResourcePicker(m Model) string {
 			isCurrent := item.cmd == viewNames[m.view]
 
 			arrow := "  "
-			var label string
+			var label, cmd string
 			switch {
 			case isCursor && isCurrent:
 				arrow = navPickerCursorStyle.Render("> ")
 				label = navActiveStyle.Bold(true).Render(item.name)
+				cmd   = navCmdActiveStyle.Render("  " + item.cmd)
 			case isCursor:
 				arrow = navPickerCursorStyle.Render("> ")
 				label = navPickerCursorStyle.Render(item.name)
+				cmd   = navCmdActiveStyle.Render("  " + item.cmd)
 			case isCurrent:
 				arrow = "  "
-				label = navActiveStyle.Render(item.name) + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("  ←")
+				label = navActiveStyle.Render(item.name)
+				cmd   = navCmdActiveStyle.Render("  " + item.cmd)
 			default:
 				arrow = "  "
 				label = navItemStyle.Render(item.name)
+				cmd   = navCmdStyle.Render("  " + item.cmd)
 			}
-			listLines = append(listLines, "    "+arrow+label)
+			listLines = append(listLines, "    "+arrow+label+cmd)
 		}
 	}
 

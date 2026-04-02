@@ -13,6 +13,7 @@ type ENI struct {
 	Profile          string
 	Region           string
 	ENIID            string
+	Name             string
 	Description      string
 	Status           string
 	PrivateIP        string
@@ -108,10 +109,19 @@ func toENI(profile, region string, ni types.NetworkInterface) ENI {
 		sgIDs = append(sgIDs, aws.ToString(g.GroupId))
 	}
 
+	name := ""
+	for _, t := range ni.TagSet {
+		if aws.ToString(t.Key) == "Name" {
+			name = aws.ToString(t.Value)
+			break
+		}
+	}
+
 	return ENI{
 		Profile:          profile,
 		Region:           region,
 		ENIID:            aws.ToString(ni.NetworkInterfaceId),
+		Name:             name,
 		Description:      aws.ToString(ni.Description),
 		Status:           string(ni.Status),
 		PrivateIP:        aws.ToString(ni.PrivateIpAddress),

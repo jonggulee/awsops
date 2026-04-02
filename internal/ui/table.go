@@ -223,6 +223,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewTGW
 	case "acm":
 		m.view = viewACM
+	case "eni":
+		m.view = viewENI
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -248,6 +250,9 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewACM:
 		m.displayedCerts = filterCertData(m.sortedCerts(), m.filters)
 		return buildACMTable(rowsSliced(certRows(m.displayedCerts), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewENI:
+		m.displayedENIs = filterENIData(m.sortedENIs(), m.filters)
+		return buildENITable(rowsSliced(eniRows(m.displayedENIs), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -285,6 +290,8 @@ func (m *Model) maxColOffset() int {
 		return 8
 	case viewACM:
 		return 5
+	case viewENI:
+		return 9
 	}
 	return 0
 }
@@ -646,4 +653,93 @@ func newTable(cols []table.Column, rows []table.Row, height int) table.Model {
 		Bold(false)
 	t.SetStyles(s)
 	return t
+}
+
+// --- ENI table ---
+
+func buildENITable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1,  sortProfile,       "Profile",     profileWidth),
+		h(2,  sortENIID,         "ENI ID",      22),
+		h(3,  sortName,          "Name",        20),
+		h(4,  sortState,         "Status",      12),
+		h(5,  sortInterfaceType, "Type",        16),
+		h(6,  sortPrivateIP,     "Private IP",  16),
+		h(7,  sortInstanceID,    "Instance ID", 20),
+		h(8,  sortVpcID,         "VPC ID",      22),
+		h(9,  sortSubnetID,      "Subnet ID",   24),
+		h(10, sortRegion,        "Region",      18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterENIData(enis []awsclient.ENI, filters []string) []awsclient.ENI {
+	if len(filters) == 0 {
+		return enis
+	}
+	var out []awsclient.ENI
+	for _, e := range enis {
+		if matchAll(filters, e.Profile, e.ENIID, e.Name, e.Description, e.Status, e.InterfaceType, e.PrivateIP, e.InstanceID, e.VpcID, e.SubnetID, e.Region) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func eniRows(enis []awsclient.ENI) []table.Row {
+	rows := make([]table.Row, len(enis))
+	for i, e := range enis {
+		name := e.Name
+		if name == "" {
+			name = e.Description
+		}
+		rows[i] = table.Row{e.Profile, e.ENIID, name, e.Status, e.InterfaceType, e.PrivateIP, e.InstanceID, e.VpcID, e.SubnetID, e.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedENIs() []awsclient.ENI {
+	enis := make([]awsclient.ENI, len(m.enis))
+	copy(enis, m.enis)
+	if m.sortBy == sortNone {
+		return enis
+	}
+	sort.Slice(enis, func(i, j int) bool {
+		a, b := enis[i], enis[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortENIID:
+			less = a.ENIID < b.ENIID
+		case sortName:
+			less = a.Name < b.Name
+		case sortState:
+			less = a.Status < b.Status
+		case sortInterfaceType:
+			less = a.InterfaceType < b.InterfaceType
+		case sortPrivateIP:
+			less = a.PrivateIP < b.PrivateIP
+		case sortInstanceID:
+			less = a.InstanceID < b.InstanceID
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortSubnetID:
+			less = a.SubnetID < b.SubnetID
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return enis
 }
