@@ -81,7 +81,7 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenRegion {
-		return renderRegionScreen(m.regions, m.regionCursor, m.width)
+		return renderRegionScreenWithErr(m.regions, m.regionCursor, m.width, m.regionErr, m.regionConfirmDiscard)
 	}
 
 	if m.screen == screenConnectivity {
