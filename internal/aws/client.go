@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
@@ -22,6 +23,7 @@ type ProfileClient struct {
 	EC2     *ec2.Client
 	STS     *sts.Client
 	ACM     *acm.Client
+	EKS     *eks.Client
 }
 
 func LoadProfiles() ([]string, error) {
@@ -69,5 +71,6 @@ func NewProfileClient(ctx context.Context, profile, region string) (*ProfileClie
 		EC2:     ec2.NewFromConfig(cfg),
 		STS:     sts.NewFromConfig(cfg),
 		ACM:     acm.NewFromConfig(cfg),
+		EKS:     eks.NewFromConfig(cfg),
 	}, nil
 }

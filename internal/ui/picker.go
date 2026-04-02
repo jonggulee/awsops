@@ -20,6 +20,7 @@ var pickerResources = []resourceItem{
 	{"Your VPCs",          "vpc",    "VPC"},
 	{"Subnets",            "subnet", "VPC"},
 	{"Transit Gateways",   "tgw",    "VPC"},
+	{"Clusters",           "eks",    "EKS"},
 	{"Certificates",       "acm",    "ACM"},
 }
 
@@ -31,6 +32,7 @@ var viewBreadcrumb = map[viewType]string{
 	viewVPC:    "VPC  ›  Your VPCs",
 	viewSubnet: "VPC  ›  Subnets",
 	viewTGW:    "VPC  ›  Transit Gateways",
+	viewEKS:    "EKS  ›  Clusters",
 	viewACM:    "ACM  ›  Certificates",
 }
 

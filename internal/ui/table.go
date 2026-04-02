@@ -225,6 +225,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewACM
 	case "eni":
 		m.view = viewENI
+	case "eks":
+		m.view = viewEKS
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -253,6 +255,9 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewENI:
 		m.displayedENIs = filterENIData(m.sortedENIs(), m.filters)
 		return buildENITable(rowsSliced(eniRows(m.displayedENIs), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewEKS:
+		m.displayedEKS = filterEKSData(m.sortedEKSClusters(), m.filters)
+		return buildEKSTable(rowsSliced(eksRows(m.displayedEKS), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -292,6 +297,8 @@ func (m *Model) maxColOffset() int {
 		return 5
 	case viewENI:
 		return 9
+	case viewEKS:
+		return 6
 	}
 	return 0
 }
@@ -704,6 +711,82 @@ func eniRows(enis []awsclient.ENI) []table.Row {
 	}
 	return rows
 }
+
+// --- EKS table ---
+
+func buildEKSTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile",  profileWidth),
+		h(2, sortName,    "Name",     28),
+		h(3, sortState,   "Status",   14),
+		h(4, sortVersion, "Version",  10),
+		h(5, sortVpcID,   "VPC ID",   22),
+		h(6, sortNone,    "Endpoint", 36),
+		h(7, sortRegion,  "Region",   18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterEKSData(clusters []awsclient.EKSCluster, filters []string) []awsclient.EKSCluster {
+	if len(filters) == 0 {
+		return clusters
+	}
+	var out []awsclient.EKSCluster
+	for _, c := range clusters {
+		if matchAll(filters, c.Profile, c.Name, c.Status, c.Version, c.VpcID, c.Region) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func eksRows(clusters []awsclient.EKSCluster) []table.Row {
+	rows := make([]table.Row, len(clusters))
+	for i, c := range clusters {
+		rows[i] = table.Row{c.Profile, c.Name, c.Status, c.Version, c.VpcID, c.Endpoint, c.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedEKSClusters() []awsclient.EKSCluster {
+	clusters := make([]awsclient.EKSCluster, len(m.eksClusters))
+	copy(clusters, m.eksClusters)
+	if m.sortBy == sortNone {
+		return clusters
+	}
+	sort.Slice(clusters, func(i, j int) bool {
+		a, b := clusters[i], clusters[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortState:
+			less = a.Status < b.Status
+		case sortVersion:
+			less = a.Version < b.Version
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return clusters
+}
+
+// --- ENI sort ---
 
 func (m *Model) sortedENIs() []awsclient.ENI {
 	enis := make([]awsclient.ENI, len(m.enis))
