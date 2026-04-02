@@ -93,7 +93,14 @@ func (m Model) View() string {
 	sections = append(sections, m.renderHeaderBar())
 	sections = append(sections, m.renderCrumbBar())
 
-	if m.mode == modeSearch || m.mode == modeCommand {
+	// 커맨드 모드: 테이블 대신 리소스 피커 표시
+	if m.mode == modeCommand {
+		sections = append(sections, renderResourcePicker(m))
+		sections = append(sections, m.renderHintBar())
+		return strings.Join(sections, "\n")
+	}
+
+	if m.mode == modeSearch {
 		sections = append(sections, m.renderInputLine())
 	}
 
@@ -124,8 +131,7 @@ func (m Model) renderHeaderBar() string {
 }
 
 func (m Model) renderCrumbBar() string {
-	// "ec2" 또는 "sg" 현재 뷰
-	view := crumbActiveStyle.Render(viewNames[m.view])
+	view := crumbActiveStyle.Render(viewBreadcrumb[m.view])
 
 	// 필터 표시
 	filterPart := ""
@@ -166,34 +172,14 @@ func (m Model) renderCrumbBar() string {
 }
 
 func (m Model) renderInputLine() string {
-	switch m.mode {
-	case modeSearch:
-		prefix := ""
-		if len(m.filters) > 0 {
-			prefix = "[" + strings.Join(m.filters, " & ") + "] & "
-		}
-		return inputStyle.Render("/ " + prefix + m.input.View())
-	case modeCommand:
-		inputLine := inputStyle.Render(": " + m.input.View())
-
-		activeOpt := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true).PaddingLeft(1).PaddingRight(1)
-		dimOpt    := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(1).PaddingRight(1)
-		sep       := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
-
-		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet, viewTGW, viewACM}
-		var parts []string
-		for _, v := range views {
-			name := viewNames[v]
-			if v == m.view {
-				parts = append(parts, activeOpt.Render(name))
-			} else {
-				parts = append(parts, dimOpt.Render(name))
-			}
-		}
-		hintLine := "  " + strings.Join(parts, sep)
-		return inputLine + "\n" + hintLine
+	if m.mode != modeSearch {
+		return ""
 	}
-	return ""
+	prefix := ""
+	if len(m.filters) > 0 {
+		prefix = "[" + strings.Join(m.filters, " & ") + "] & "
+	}
+	return inputStyle.Render("/ " + prefix + m.input.View())
 }
 
 func (m Model) renderHintBar() string {

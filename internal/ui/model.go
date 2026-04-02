@@ -220,6 +220,7 @@ type Model struct {
 	width          int
 	height         int
 	regions        []regionEntry
+	commandCursor        int           // 리소스 피커 커서 위치
 	regionsPrev          []regionEntry // 리전 화면 진입 시 스냅샷 (취소 복원용)
 	regionCursor         int
 	regionErr            bool // 선택 없이 enter 시 경고 표시
@@ -773,7 +774,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			case ":":
 				m.mode = modeCommand
-				m.input.Placeholder = "ec2 / sg / vpc / subnet / tgw"
+				m.commandCursor = 0
+				m.input.Placeholder = ""
 				m.input.SetValue("")
 				m.input.Focus()
 				return m, textinput.Blink
@@ -819,19 +821,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case modeCommand:
+			items := filteredPickerItems(m.input.Value())
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
 			case "esc":
 				m.mode = modeNormal
+				m.commandCursor = 0
 				m.input.SetValue("")
 				m.input.Blur()
 				return m, nil
+			case "up", "k":
+				if m.commandCursor > 0 {
+					m.commandCursor--
+				}
+				return m, nil
+			case "down", "j":
+				if m.commandCursor < len(items)-1 {
+					m.commandCursor++
+				}
+				return m, nil
 			case "enter":
-				m.mode = modeNormal
-				m.input.Blur()
-				m.applyCommand(m.input.Value())
-				m.input.SetValue("")
+				if len(items) > 0 && m.commandCursor < len(items) {
+					selected := items[m.commandCursor].cmd
+					m.mode = modeNormal
+					m.commandCursor = 0
+					m.input.Blur()
+					m.input.SetValue("")
+					m.applyCommand(selected)
+				}
 				return m, nil
 			}
 		}
@@ -847,6 +865,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 			if m.mode == modeSearch && m.input.Value() != prevVal {
 				m.table = m.buildCurrentTable()
+			}
+			if m.mode == modeCommand && m.input.Value() != prevVal {
+				// 필터 바뀌면 커서 리셋
+				m.commandCursor = 0
 			}
 		}
 
