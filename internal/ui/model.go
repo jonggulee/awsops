@@ -51,6 +51,11 @@ type routeTablesLoadedMsg struct {
 	errs   []error
 }
 
+type enisLoadedMsg struct {
+	enis []awsclient.ENI
+	errs []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -150,6 +155,18 @@ var sortColNames = map[sortCol]string{
 	sortResourceType: "Type",
 }
 
+// --- detail history ---
+
+// detailSnapshot captures the state of a detail view for back-navigation.
+type detailSnapshot struct {
+	selectedInst   *awsclient.Instance
+	selectedSG     *awsclient.SecurityGroup
+	selectedVPC    *awsclient.VPC
+	selectedSubnet *awsclient.Subnet
+	detailScroll   int
+	detailCursor   int
+}
+
 // --- model ---
 
 type Model struct {
@@ -179,6 +196,7 @@ type Model struct {
 	connectivityResult        *awsclient.ConnectivityResult
 	connectivityCursor  int
 	routeTables         []awsclient.VPCRouteTable
+	enis                []awsclient.ENI
 	profileToAccount    map[string]string // profile → accountID
 	accountToProfile    map[string]string // accountID → profile
 	fetchErr         []error
@@ -190,6 +208,15 @@ type Model struct {
 	sortBy         sortCol
 	sortAsc        bool
 	detailScroll   int
+	detailCursor   int              // detail 화면에서 선택된 interactive 필드 인덱스 (-1 = 없음)
+	detailHistory  []detailSnapshot // 뒤로가기 스택
+	colOffset      int // 가로 스크롤: 첫 번째로 보이는 컬럼 인덱스
+	// 현재 테이블에 표시 중인 데이터 (커서 기반 선택에 사용)
+	displayedInstances   []awsclient.Instance
+	displayedGroups      []awsclient.SecurityGroup
+	displayedVPCs        []awsclient.VPC
+	displayedSubnets     []awsclient.Subnet
+	displayedAttachments []awsclient.TGWAttachment
 }
 
 func New() Model {
@@ -221,6 +248,7 @@ func (m Model) Init() tea.Cmd {
 		fetchTGWsWithRegions(regions),
 		fetchRouteTablesWithRegions(regions),
 		fetchAccountIDs(),
+		fetchENIsWithRegions(regions),
 	)
 }
 
@@ -273,6 +301,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.table = m.buildCurrentTable()
 		}
 
+	case enisLoadedMsg:
+		m.enis = msg.enis
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+
 	case routeTablesLoadedMsg:
 		m.routeTables = msg.tables
 		m.fetchErr = append(m.fetchErr, msg.errs...)
@@ -318,8 +350,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tgwRoutes = nil
 				m.tgwAssociations = nil
 				m.routeTables = nil
+				m.enis = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -476,26 +509,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// 디테일 화면에서는 스크롤 + esc/q 로 뒤로
+		// 디테일 화면: ↑/↓ = 필드 이동, j/k = 스크롤, enter = 이동
 		if m.screen == screenDetail {
 			pageSize := m.height / 2
 			if pageSize < 1 {
 				pageSize = 1
 			}
+			n := m.detailInteractiveFieldCount()
 			switch msg.String() {
-			case "esc", "q", "ctrl+c":
-				if msg.String() == "ctrl+c" {
-					return m, tea.Quit
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "q":
+				if m.detailCursor >= 0 {
+					m.detailCursor = -1
+				} else if len(m.detailHistory) > 0 {
+					// 히스토리에서 이전 상태 복원
+					prev := m.detailHistory[len(m.detailHistory)-1]
+					m.detailHistory = m.detailHistory[:len(m.detailHistory)-1]
+					m.selectedInst = prev.selectedInst
+					m.selectedSG = prev.selectedSG
+					m.selectedVPC = prev.selectedVPC
+					m.selectedSubnet = prev.selectedSubnet
+					m.detailScroll = prev.detailScroll
+					m.detailCursor = prev.detailCursor
+				} else {
+					m.screen = screenTable
+					m.selectedInst = nil
+					m.selectedTGWAtt = nil
+					m.detailScroll = 0
 				}
-				m.screen = screenTable
-				m.selectedInst = nil
-				m.selectedTGWAtt = nil
-				m.detailScroll = 0
-			case "up", "k":
+			case "up":
+				if n > 0 {
+					if m.detailCursor < 0 {
+						m.detailCursor = n - 1
+					} else {
+						m.detailCursor = (m.detailCursor - 1 + n) % n
+					}
+				}
+			case "down":
+				if n > 0 {
+					if m.detailCursor < 0 {
+						m.detailCursor = 0
+					} else {
+						m.detailCursor = (m.detailCursor + 1) % n
+					}
+				}
+			case "enter":
+				m.navigateFromDetail()
+			case "k":
 				if m.detailScroll > 0 {
 					m.detailScroll--
 				}
-			case "down", "j":
+			case "j":
 				if m.detailScroll < m.detailMaxScroll() {
 					m.detailScroll++
 				}
@@ -526,6 +591,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedSG, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
 					}
 				case viewSG:
 					if sg := m.selectedSG_(); sg != nil {
@@ -533,6 +600,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedInst, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
 					}
 				case viewVPC:
 					if vpc := m.selectedVPC_(); vpc != nil {
@@ -540,6 +609,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedInst, m.selectedSG, m.selectedSubnet = nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
 					}
 				case viewSubnet:
 					if subnet := m.selectedSubnet_(); subnet != nil {
@@ -547,6 +618,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedInst, m.selectedSG, m.selectedVPC = nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
 					}
 				case viewTGW:
 					if att := m.selectedTGWAtt_(); att != nil {
@@ -554,6 +627,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet = nil, nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
 					}
 				}
 				return m, nil
@@ -595,8 +670,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tgwRoutes = nil
 				m.tgwAssociations = nil
 				m.routeTables = nil
+				m.enis = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids))
 			case "R":
 				m.screen = screenRegion
 				m.regionCursor = 0
@@ -613,6 +689,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue("")
 				m.input.Focus()
 				return m, textinput.Blink
+			case "right":
+				if max := m.maxColOffset(); m.colOffset < max {
+					m.colOffset++
+					m.table = m.buildCurrentTable()
+				}
+				return m, nil
+			case "left":
+				if m.colOffset > 0 {
+					m.colOffset--
+					m.table = m.buildCurrentTable()
+				}
+				return m, nil
 			case "esc":
 				m.filters = nil
 				m.input.SetValue("")
@@ -681,60 +769,101 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// selectedInstance returns the Instance matching the currently highlighted table row.
-func (m *Model) selectedInstance() *awsclient.Instance {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return nil
+// detailInteractiveFieldCount returns how many arrow-navigable fields the current detail view has.
+// EC2: VPC ID(0), Subnet ID(1), SG(2..)
+func (m *Model) detailInteractiveFieldCount() int {
+	if m.selectedInst != nil {
+		return 2 + len(m.selectedInst.SecurityGroups)
 	}
-	id := row[2] // Instance ID column
-	for i := range m.instances {
-		if m.instances[i].InstanceID == id {
-			return &m.instances[i]
+	return 0
+}
+
+// navigateFromDetail navigates to the resource pointed to by the current detailCursor.
+func (m *Model) navigateFromDetail() {
+	if m.selectedInst == nil || m.detailCursor < 0 {
+		return
+	}
+	// 현재 상태를 히스토리에 push
+	snapshot := detailSnapshot{
+		selectedInst:   m.selectedInst,
+		selectedSG:     m.selectedSG,
+		selectedVPC:    m.selectedVPC,
+		selectedSubnet: m.selectedSubnet,
+		detailScroll:   m.detailScroll,
+		detailCursor:   m.detailCursor,
+	}
+
+	switch m.detailCursor {
+	case 0: // VPC ID
+		for i := range m.vpcs {
+			if m.vpcs[i].VpcID == m.selectedInst.VpcID {
+				m.detailHistory = append(m.detailHistory, snapshot)
+				m.selectedVPC = &m.vpcs[i]
+				m.selectedInst, m.selectedSG, m.selectedSubnet = nil, nil, nil
+				m.detailScroll = 0
+				m.detailCursor = -1
+				return
+			}
 		}
+	case 1: // Subnet ID
+		for i := range m.subnets {
+			if m.subnets[i].SubnetID == m.selectedInst.SubnetID {
+				m.detailHistory = append(m.detailHistory, snapshot)
+				m.selectedSubnet = &m.subnets[i]
+				m.selectedInst, m.selectedSG, m.selectedVPC = nil, nil, nil
+				m.detailScroll = 0
+				m.detailCursor = -1
+				return
+			}
+		}
+	default: // SG (cursor 2+)
+		sgIdx := m.detailCursor - 2
+		if sgIdx < len(m.selectedInst.SecurityGroups) {
+			targetID := m.selectedInst.SecurityGroups[sgIdx].ID
+			for i := range m.groups {
+				if m.groups[i].GroupID == targetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSG = &m.groups[i]
+					m.selectedInst, m.selectedVPC, m.selectedSubnet = nil, nil, nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return
+				}
+			}
+		}
+	}
+}
+
+// selectedInstance returns the Instance at the current table cursor position.
+func (m *Model) selectedInstance() *awsclient.Instance {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedInstances) {
+		return &m.displayedInstances[c]
 	}
 	return nil
 }
 
-// selectedSG_ returns the SecurityGroup matching the currently highlighted table row.
+// selectedSG_ returns the SecurityGroup at the current table cursor position.
 func (m *Model) selectedSG_() *awsclient.SecurityGroup {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return nil
-	}
-	id := row[2] // Group ID column
-	for i := range m.groups {
-		if m.groups[i].GroupID == id {
-			return &m.groups[i]
-		}
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedGroups) {
+		return &m.displayedGroups[c]
 	}
 	return nil
 }
 
 func (m *Model) selectedVPC_() *awsclient.VPC {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return nil
-	}
-	id := row[2] // VPC ID column
-	for i := range m.vpcs {
-		if m.vpcs[i].VpcID == id {
-			return &m.vpcs[i]
-		}
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedVPCs) {
+		return &m.displayedVPCs[c]
 	}
 	return nil
 }
 
 func (m *Model) selectedSubnet_() *awsclient.Subnet {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return nil
-	}
-	id := row[2] // Subnet ID column
-	for i := range m.subnets {
-		if m.subnets[i].SubnetID == id {
-			return &m.subnets[i]
-		}
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedSubnets) {
+		return &m.displayedSubnets[c]
 	}
 	return nil
 }
@@ -790,15 +919,9 @@ func (m *Model) connectivityPickerSubnets() []awsclient.Subnet {
 }
 
 func (m *Model) selectedTGWAtt_() *awsclient.TGWAttachment {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return nil
-	}
-	id := row[2] // Attachment ID column
-	for i := range m.tgwAttachments {
-		if m.tgwAttachments[i].AttachmentID == id {
-			return &m.tgwAttachments[i]
-		}
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedAttachments) {
+		return &m.displayedAttachments[c]
 	}
 	return nil
 }
@@ -978,6 +1101,7 @@ func (m *Model) applyCommand(cmd string) {
 	}
 	m.sortBy = sortNone
 	m.filters = nil
+	m.colOffset = 0
 	m.input.SetValue("")
 	m.table = m.buildCurrentTable()
 }
@@ -985,16 +1109,54 @@ func (m *Model) applyCommand(cmd string) {
 func (m *Model) buildCurrentTable() table.Model {
 	switch m.view {
 	case viewSG:
-		return buildSGTable(filterSGRows(m.sortedGroups(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+		m.displayedGroups = filterSGData(m.sortedGroups(), m.filters)
+		return buildSGTable(rowsSliced(sgRows(m.displayedGroups), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	case viewVPC:
-		return buildVPCTable(filterVPCRows(m.sortedVPCs(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+		m.displayedVPCs = filterVPCData(m.sortedVPCs(), m.filters)
+		return buildVPCTable(rowsSliced(vpcRows(m.displayedVPCs), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	case viewSubnet:
-		return buildSubnetTable(filterSubnetRows(m.sortedSubnets(), m.filters), m.height, m.maxProfileWidth(), m.width, m.sortBy, m.sortAsc)
+		m.displayedSubnets = filterSubnetData(m.sortedSubnets(), m.filters)
+		return buildSubnetTable(rowsSliced(subnetRows(m.displayedSubnets), m.colOffset), m.height, m.maxProfileWidth(), m.width, m.sortBy, m.sortAsc, m.colOffset)
 	case viewTGW:
-		return buildTGWTable(filterTGWRows(m.sortedAttachments(), m.filters, m.accountToProfile), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+		m.displayedAttachments = filterTGWData(m.sortedAttachments(), m.filters)
+		return buildTGWTable(rowsSliced(tgwRows(m.displayedAttachments, m.accountToProfile), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
-		return buildEC2Table(filterEC2Rows(m.sortedInstances(), m.filters), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc)
+		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
+		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	}
+}
+
+// rowsSliced returns rows with each row's values starting from colOffset.
+func rowsSliced(rows []table.Row, colOffset int) []table.Row {
+	if colOffset <= 0 {
+		return rows
+	}
+	result := make([]table.Row, len(rows))
+	for i, row := range rows {
+		if colOffset < len(row) {
+			result[i] = row[colOffset:]
+		} else {
+			result[i] = table.Row{}
+		}
+	}
+	return result
+}
+
+// maxColOffset returns the maximum colOffset for the current view (always keep at least 1 column).
+func (m *Model) maxColOffset() int {
+	switch m.view {
+	case viewEC2:
+		return 9
+	case viewSG:
+		return 5
+	case viewVPC:
+		return 5
+	case viewSubnet:
+		return 6
+	case viewTGW:
+		return 8
+	}
+	return 0
 }
 
 func (m *Model) maxProfileWidth() int {
@@ -1019,11 +1181,11 @@ func (m *Model) maxProfileWidth() int {
 
 // --- EC2 table ---
 
-func buildEC2Table(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+func buildEC2Table(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
 	h := func(n int, col sortCol, title string, w int) table.Column {
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
-	cols := []table.Column{
+	allCols := []table.Column{
 		h(1,  sortProfile,    "Profile",     profileWidth),
 		h(2,  sortName,       "Name",        16),
 		h(3,  sortInstanceID, "Instance ID", 20),
@@ -1035,20 +1197,24 @@ func buildEC2Table(rows []table.Row, height, profileWidth int, sortBy sortCol, s
 		h(9,  sortSubnetID,   "Subnet ID",   24),
 		h(10, sortRegion,     "Region",      18),
 	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
 	return newTable(cols, rows, height)
 }
 
-func filterEC2Rows(instances []awsclient.Instance, filters []string) []table.Row {
+func filterEC2Data(instances []awsclient.Instance, filters []string) []awsclient.Instance {
 	if len(filters) == 0 {
-		return ec2Rows(instances)
+		return instances
 	}
-	var filtered []awsclient.Instance
+	var out []awsclient.Instance
 	for _, inst := range instances {
 		if matchAll(filters, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.VpcID, inst.SubnetID) {
-			filtered = append(filtered, inst)
+			out = append(out, inst)
 		}
 	}
-	return ec2Rows(filtered)
+	return out
 }
 
 func ec2Rows(instances []awsclient.Instance) []table.Row {
@@ -1061,17 +1227,21 @@ func ec2Rows(instances []awsclient.Instance) []table.Row {
 
 // --- SG table ---
 
-func buildSGTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+func buildSGTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
 	h := func(n int, col sortCol, title string, w int) table.Column {
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
-	cols := []table.Column{
-		h(1, sortProfile,     "Profile",     profileWidth),
-		h(2, sortName,        "Name",        22),
-		h(3, sortGroupID,     "Group ID",    22),
-		h(4, sortVpcID,       "VPC ID",      22),
-		h(5, sortNone,        "Description", 36),
-		h(6, sortRegion,      "Region",      18),
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile",     profileWidth),
+		h(2, sortName,    "Name",        22),
+		h(3, sortGroupID, "Group ID",    22),
+		h(4, sortVpcID,   "VPC ID",      22),
+		h(5, sortNone,    "Description", 36),
+		h(6, sortRegion,  "Region",      18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
 	}
 	return newTable(cols, rows, height)
 }
@@ -1088,17 +1258,17 @@ func colTitle(n int, col sortCol, title string, sortBy sortCol, sortAsc bool) st
 	return prefix + title
 }
 
-func filterSGRows(groups []awsclient.SecurityGroup, filters []string) []table.Row {
+func filterSGData(groups []awsclient.SecurityGroup, filters []string) []awsclient.SecurityGroup {
 	if len(filters) == 0 {
-		return sgRows(groups)
+		return groups
 	}
-	var filtered []awsclient.SecurityGroup
+	var out []awsclient.SecurityGroup
 	for _, sg := range groups {
 		if matchAll(filters, sg.Profile, sg.Region, sg.Name, sg.GroupID, sg.VpcID, sg.Description) {
-			filtered = append(filtered, sg)
+			out = append(out, sg)
 		}
 	}
-	return sgRows(filtered)
+	return out
 }
 
 func sgRows(groups []awsclient.SecurityGroup) []table.Row {
@@ -1111,32 +1281,36 @@ func sgRows(groups []awsclient.SecurityGroup) []table.Row {
 
 // --- VPC table ---
 
-func buildVPCTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+func buildVPCTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
 	h := func(n int, col sortCol, title string, w int) table.Column {
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
-	cols := []table.Column{
-		h(1, sortProfile, "Profile",  profileWidth),
-		h(2, sortName,    "Name",     20),
-		h(3, sortVpcID,   "VPC ID",   22),
-		h(4, sortCidr,    "CIDR",     18),
-		h(5, sortState,   "State",    12),
-		h(6, sortRegion,  "Region",   18),
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile", profileWidth),
+		h(2, sortName,    "Name",    20),
+		h(3, sortVpcID,   "VPC ID",  22),
+		h(4, sortCidr,    "CIDR",    18),
+		h(5, sortState,   "State",   12),
+		h(6, sortRegion,  "Region",  18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
 	}
 	return newTable(cols, rows, height)
 }
 
-func filterVPCRows(vpcs []awsclient.VPC, filters []string) []table.Row {
+func filterVPCData(vpcs []awsclient.VPC, filters []string) []awsclient.VPC {
 	if len(filters) == 0 {
-		return vpcRows(vpcs)
+		return vpcs
 	}
-	var filtered []awsclient.VPC
+	var out []awsclient.VPC
 	for _, v := range vpcs {
 		if matchAll(filters, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.State, v.Region) {
-			filtered = append(filtered, v)
+			out = append(out, v)
 		}
 	}
-	return vpcRows(filtered)
+	return out
 }
 
 func vpcRows(vpcs []awsclient.VPC) []table.Row {
@@ -1154,18 +1328,18 @@ func vpcRows(vpcs []awsclient.VPC) []table.Row {
 
 // --- Subnet table ---
 
-func buildSubnetTable(rows []table.Row, height, profileWidth, termWidth int, sortBy sortCol, sortAsc bool) table.Model {
+func buildSubnetTable(rows []table.Row, height, profileWidth, termWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
 	h := func(n int, col sortCol, title string, w int) table.Column {
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
 	const fixedCols = 24 + 22 + 18 + 20 + 18 // SubnetID+VpcID+CIDR+AZ+Region
-	const padding = 16                          // 테이블 내부 패딩 여유분
+	const padding = 16
 	const minNameWidth = 18
 	nameWidth := termWidth - profileWidth - fixedCols - padding
 	if nameWidth < minNameWidth {
 		nameWidth = minNameWidth
 	}
-	cols := []table.Column{
+	allCols := []table.Column{
 		h(1, sortProfile,    "Profile",   profileWidth),
 		h(2, sortName,       "Name",      nameWidth),
 		h(3, sortInstanceID, "Subnet ID", 24),
@@ -1174,20 +1348,24 @@ func buildSubnetTable(rows []table.Row, height, profileWidth, termWidth int, sor
 		h(6, sortAZ,         "AZ",        20),
 		h(7, sortRegion,     "Region",    18),
 	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
 	return newTable(cols, rows, height)
 }
 
-func filterSubnetRows(subnets []awsclient.Subnet, filters []string) []table.Row {
+func filterSubnetData(subnets []awsclient.Subnet, filters []string) []awsclient.Subnet {
 	if len(filters) == 0 {
-		return subnetRows(subnets)
+		return subnets
 	}
-	var filtered []awsclient.Subnet
+	var out []awsclient.Subnet
 	for _, s := range subnets {
 		if matchAll(filters, s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region) {
-			filtered = append(filtered, s)
+			out = append(out, s)
 		}
 	}
-	return subnetRows(filtered)
+	return out
 }
 
 func subnetRows(subnets []awsclient.Subnet) []table.Row {
@@ -1253,38 +1431,40 @@ func (m *Model) sortedAttachments() []awsclient.TGWAttachment {
 	return atts
 }
 
-func buildTGWTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool) table.Model {
+func buildTGWTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
 	h := func(n int, col sortCol, title string, w int) table.Column {
 		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
 	}
-	cols := []table.Column{
-		h(1, sortProfile,      "Profile",       profileWidth),
-		h(2, sortTgwID,        "TGW ID",        22),
+	allCols := []table.Column{
+		h(1, sortProfile,      "Profile",      profileWidth),
+		h(2, sortTgwID,        "TGW ID",       22),
 		h(3, sortAttachmentID, "Attachment ID", 26),
 		h(4, sortResourceType, "Type",          10),
-		h(5, sortResourceID,   "Resource ID",  22),
-		h(6, sortOwnerID,      "Owner",        20),
-		h(7, sortOwnerID,      "TGW Owner",    20),
-		h(8, sortState,        "State",        14),
-		h(9, sortRegion,       "Region",       18),
+		h(5, sortResourceID,   "Resource ID",   22),
+		h(6, sortOwnerID,      "Owner",         20),
+		h(7, sortOwnerID,      "TGW Owner",     20),
+		h(8, sortState,        "State",         14),
+		h(9, sortRegion,       "Region",        18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
 	}
 	return newTable(cols, rows, height)
 }
 
-func filterTGWRows(atts []awsclient.TGWAttachment, filters []string, accountToProfile map[string]string) []table.Row {
+func filterTGWData(atts []awsclient.TGWAttachment, filters []string) []awsclient.TGWAttachment {
 	if len(filters) == 0 {
-		return tgwRows(atts, accountToProfile)
+		return atts
 	}
-	var filtered []awsclient.TGWAttachment
+	var out []awsclient.TGWAttachment
 	for _, a := range atts {
-		ownerProfile := accountToProfile[a.ResourceOwnerID]
-		tgwOwnerProfile := accountToProfile[a.TgwOwnerID]
 		if matchAll(filters, a.Profile, a.TgwID, a.AttachmentID, a.ResourceType, a.ResourceID,
-			a.ResourceOwnerID, ownerProfile, a.TgwOwnerID, tgwOwnerProfile, a.State, a.Region) {
-			filtered = append(filtered, a)
+			a.ResourceOwnerID, a.TgwOwnerID, a.State, a.Region) {
+			out = append(out, a)
 		}
 	}
-	return tgwRows(filtered, accountToProfile)
+	return out
 }
 
 func tgwRows(atts []awsclient.TGWAttachment, accountToProfile map[string]string) []table.Row {

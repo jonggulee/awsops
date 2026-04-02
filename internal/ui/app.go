@@ -63,6 +63,13 @@ func fetchSGWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchENIsWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		enis, errs := awsclient.FetchAllENIs(context.Background(), regions)
+		return enisLoadedMsg{enis: enis, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

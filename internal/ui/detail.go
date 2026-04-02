@@ -15,12 +15,13 @@ var (
 				MarginBottom(1)
 	sectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).
 			MarginTop(1)
-	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(20)
-	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	tagStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
+	labelStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(20)
+	valueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	tagStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
+	nameTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // 이름 힌트: 연두색
 )
 
-func renderDetail(inst *awsclient.Instance) string {
+func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool) string {
 	if inst == nil {
 		return ""
 	}
@@ -42,9 +43,20 @@ func renderDetail(inst *awsclient.Instance) string {
 	b.WriteString(sectionStyle.Render("Network") + "\n")
 	b.WriteString(row("Private IP", orDash(inst.PrivateIP)))
 	b.WriteString(row("Public IP", orDash(inst.PublicIP)))
-	b.WriteString(row("VPC ID", orDash(inst.VpcID)))
-	b.WriteString(row("Subnet ID", orDash(inst.SubnetID)))
+	b.WriteString(rowMaybeActive("VPC ID", withName(inst.VpcID, vpcName), detailCursor == 0))
+	b.WriteString(rowMaybeActive("Subnet ID", withName(inst.SubnetID, subnetName), detailCursor == 1))
 	b.WriteString(row("Availability Zone", orDash(inst.AvailabilityZone)))
+
+	// Security Groups
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(inst.SecurityGroups))) + "\n")
+	if len(inst.SecurityGroups) == 0 {
+		b.WriteString(row("", "-"))
+	} else {
+		for i, sg := range inst.SecurityGroups {
+			label := fmt.Sprintf("SG %d", i+1)
+			b.WriteString(rowMaybeActive(label, withName(sg.ID, sg.Name), detailCursor == 2+i))
+		}
+	}
 
 	// Configuration
 	b.WriteString(sectionStyle.Render("Configuration") + "\n")
@@ -55,13 +67,32 @@ func renderDetail(inst *awsclient.Instance) string {
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
 	b.WriteString(renderTags(inst.Tags))
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open detail    j/k  scroll"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  select field    j/k  scroll"
+	default:
+		hint = "esc / q  back to list    ↑/↓  select field    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
 
 	return b.String()
 }
 
 func row(label, value string) string {
 	return "  " + labelStyle.Render(label) + valueStyle.Render(value) + "\n"
+}
+
+// rowMaybeActive renders a row with a ▶ cursor indicator when active is true.
+func rowMaybeActive(label, value string, active bool) string {
+	if active {
+		cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
+		activeLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(20).Bold(true)
+		return cursorStyle.Render("▶ ") + activeLabelStyle.Render(label) + value + "\n"
+	}
+	return row(label, value)
 }
 
 func orDash(s string) string {
@@ -71,6 +102,17 @@ func orDash(s string) string {
 	return s
 }
 
+// withName renders an AWS resource ID with an optional name hint: "vpc-xxx  [my-vpc]"
+func withName(id, name string) string {
+	if id == "" {
+		return "-"
+	}
+	if name != "" && name != id {
+		return valueStyle.Render(id) + "  " + nameTagStyle.Render("["+name+"]")
+	}
+	return id
+}
+
 func nameOrID(inst *awsclient.Instance) string {
 	if inst.Name != "" {
 		return inst.Name
@@ -78,7 +120,7 @@ func nameOrID(inst *awsclient.Instance) string {
 	return inst.InstanceID
 }
 
-func renderSGDetail(sg *awsclient.SecurityGroup) string {
+func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[string]string, enis []awsclient.ENI) string {
 	if sg == nil {
 		return ""
 	}
@@ -92,7 +134,7 @@ func renderSGDetail(sg *awsclient.SecurityGroup) string {
 	b.WriteString(row("Group ID", sg.GroupID))
 	b.WriteString(row("Name", sg.Name))
 	b.WriteString(row("Description", orDash(sg.Description)))
-	b.WriteString(row("VPC ID", orDash(sg.VpcID)))
+	b.WriteString(row("VPC ID", withName(sg.VpcID, vpcName)))
 	b.WriteString(row("Region", sg.Region))
 
 	inbound := filterRules(sg.Rules, "inbound")
@@ -102,14 +144,22 @@ func renderSGDetail(sg *awsclient.SecurityGroup) string {
 	if len(inbound) == 0 {
 		b.WriteString("  " + tagStyle.Render("-") + "\n")
 	} else {
-		b.WriteString(renderRules(inbound))
+		b.WriteString(renderRules(inbound, sgNames))
 	}
 
 	b.WriteString(sectionStyle.Render(fmt.Sprintf("Outbound Rules (%d)", len(outbound))) + "\n")
 	if len(outbound) == 0 {
 		b.WriteString("  " + tagStyle.Render("-") + "\n")
 	} else {
-		b.WriteString(renderRules(outbound))
+		b.WriteString(renderRules(outbound, sgNames))
+	}
+
+	// Associated Resources (ENIs)
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Associated Resources (%d)", len(enis))) + "\n")
+	if len(enis) == 0 {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		b.WriteString(renderENIs(enis))
 	}
 
 	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
@@ -126,17 +176,50 @@ func filterRules(rules []awsclient.SGRule, direction string) []awsclient.SGRule 
 	return filtered
 }
 
-func renderRules(rules []awsclient.SGRule) string {
+func renderRules(rules []awsclient.SGRule, sgNames map[string]string) string {
 	ruleProtoStyle  := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(8)
 	rulePortStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Width(12)
 	ruleSourceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("180"))
 
 	var b strings.Builder
 	for _, r := range rules {
+		source := ruleSourceStyle.Render(r.Source)
+		if strings.HasPrefix(r.Source, "sg-") {
+			if name, ok := sgNames[r.Source]; ok && name != "" {
+				source = ruleSourceStyle.Render(r.Source) + "  " + nameTagStyle.Render("["+name+"]")
+			}
+		}
 		b.WriteString("  " +
 			ruleProtoStyle.Render(r.ProtocolStr()) +
 			rulePortStyle.Render(r.PortRange()) +
-			ruleSourceStyle.Render(r.Source) + "\n")
+			source + "\n")
+	}
+	return b.String()
+}
+
+func renderENIs(enis []awsclient.ENI) string {
+	eniIDStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Width(24)
+	eniMetaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	eniInstStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+
+	var b strings.Builder
+	for _, e := range enis {
+		instPart := "-"
+		if e.InstanceID != "" {
+			instPart = e.InstanceID
+		}
+		desc := e.Description
+		if desc == "" {
+			desc = e.InterfaceType
+		}
+		meta := fmt.Sprintf("%s  %s  %s", instPart, e.PrivateIP, e.Status)
+		b.WriteString("  " +
+			eniIDStyle.Render(e.ENIID) +
+			eniInstStyle.Render(meta))
+		if desc != "" {
+			b.WriteString("  " + eniMetaStyle.Render("("+desc+")"))
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	awsclient "github.com/jgulee/awsops/internal/aws"
 )
 
 // --- styles ---
@@ -143,10 +145,17 @@ func (m Model) renderCrumbBar() string {
 			crumbFilterStyle.Render(sortColNames[m.sortBy]+arrow)
 	}
 
+	// 가로 스크롤 위치
+	colScrollPart := ""
+	if m.colOffset > 0 {
+		colScrollPart = crumbBarStyle.Render("  ") +
+			crumbFilterStyle.Render(fmt.Sprintf("◀col+%d", m.colOffset))
+	}
+
 	// 행 수
 	rowCount := crumbBarStyle.Render(fmt.Sprintf("  (%d)", len(m.table.Rows())))
 
-	content := view + filterPart + sortPart + rowCount
+	content := view + filterPart + sortPart + colScrollPart + rowCount
 	padding := m.width - lipgloss.Width(content) - 1
 	if padding < 0 {
 		padding = 0
@@ -198,6 +207,7 @@ func (m Model) renderHintBar() string {
 		hintItem("R", "Regions"),
 		hintItem("esc", "Clear"),
 		hintItem("↑/↓", "Navigate"),
+		hintItem("◀/▶", "Scroll"),
 		hintItem("q", "Quit"),
 	}
 	if m.view == viewSubnet {
@@ -210,7 +220,8 @@ func (m Model) renderHintBar() string {
 func (m Model) currentDetailContent() string {
 	switch {
 	case m.selectedSG != nil:
-		return renderSGDetail(m.selectedSG)
+		enis := m.enisForSG(m.selectedSG.GroupID)
+		return renderSGDetail(m.selectedSG, m.lookupVPCName(m.selectedSG.VpcID), m.buildSGNameMap(), enis)
 	case m.selectedVPC != nil:
 		return renderVPCDetail(m.selectedVPC)
 	case m.selectedSubnet != nil:
@@ -218,8 +229,49 @@ func (m Model) currentDetailContent() string {
 	case m.selectedTGWAtt != nil:
 		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
 	default:
-		return renderDetail(m.selectedInst)
+		var vpcName, subnetName string
+		if m.selectedInst != nil {
+			vpcName = m.lookupVPCName(m.selectedInst.VpcID)
+			subnetName = m.lookupSubnetName(m.selectedInst.SubnetID)
+		}
+		return renderDetail(m.selectedInst, vpcName, subnetName, m.detailCursor, len(m.detailHistory) > 0)
 	}
+}
+
+func (m Model) lookupVPCName(id string) string {
+	for _, v := range m.vpcs {
+		if v.VpcID == id {
+			return v.Name
+		}
+	}
+	return ""
+}
+
+func (m Model) lookupSubnetName(id string) string {
+	for _, s := range m.subnets {
+		if s.SubnetID == id {
+			return s.Name
+		}
+	}
+	return ""
+}
+
+func (m Model) buildSGNameMap() map[string]string {
+	out := make(map[string]string, len(m.groups))
+	for _, sg := range m.groups {
+		out[sg.GroupID] = sg.Name
+	}
+	return out
+}
+
+func (m Model) enisForSG(sgID string) []awsclient.ENI {
+	var out []awsclient.ENI
+	for _, e := range m.enis {
+		if e.HasSG(sgID) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (m Model) detailMaxScroll() int {

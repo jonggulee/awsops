@@ -11,6 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+// SGRef is a lightweight security group reference (ID + name) attached to an instance.
+type SGRef struct {
+	ID   string
+	Name string
+}
+
 type Instance struct {
 	Profile          string
 	Region           string
@@ -27,6 +33,7 @@ type Instance struct {
 	KeyName          string
 	LaunchTime       time.Time
 	Tags             map[string]string
+	SecurityGroups   []SGRef
 }
 
 type profileResult struct {
@@ -121,6 +128,14 @@ func toInstance(profile, region string, inst types.Instance) Instance {
 		az = aws.ToString(inst.Placement.AvailabilityZone)
 	}
 
+	var sgs []SGRef
+	for _, sg := range inst.SecurityGroups {
+		sgs = append(sgs, SGRef{
+			ID:   aws.ToString(sg.GroupId),
+			Name: aws.ToString(sg.GroupName),
+		})
+	}
+
 	return Instance{
 		Profile:          profile,
 		Region:           region,
@@ -137,6 +152,7 @@ func toInstance(profile, region string, inst types.Instance) Instance {
 		KeyName:          aws.ToString(inst.KeyName),
 		LaunchTime:       launchTime,
 		Tags:             tags,
+		SecurityGroups:   sgs,
 	}
 }
 
