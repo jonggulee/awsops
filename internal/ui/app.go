@@ -70,6 +70,13 @@ func fetchENIsWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchCertificatesWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		certs, errs := awsclient.FetchAllCertificates(context.Background(), regions)
+		return certsLoadedMsg{certs: certs, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

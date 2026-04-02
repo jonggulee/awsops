@@ -180,7 +180,7 @@ func (m Model) renderInputLine() string {
 		dimOpt    := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).PaddingLeft(1).PaddingRight(1)
 		sep       := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
 
-		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet, viewTGW}
+		views := []viewType{viewEC2, viewSG, viewVPC, viewSubnet, viewTGW, viewACM}
 		var parts []string
 		for _, v := range views {
 			name := viewNames[v]
@@ -228,6 +228,8 @@ func (m Model) currentDetailContent() string {
 		return renderSubnetDetail(m.selectedSubnet)
 	case m.selectedTGWAtt != nil:
 		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
+	case m.selectedCert != nil:
+		return renderCertDetail(m.selectedCert)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {

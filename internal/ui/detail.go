@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -270,6 +271,66 @@ func renderSubnetDetail(subnet *awsclient.Subnet) string {
 
 	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
 	return b.String()
+}
+
+func renderCertDetail(cert *awsclient.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("ACM › %s", cert.DomainName)) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", cert.Profile))
+	b.WriteString(row("Domain Name", cert.DomainName))
+	b.WriteString(row("ARN", cert.ARN))
+	b.WriteString(row("Status", coloredCertStatus(cert.Status)))
+	b.WriteString(row("Type", cert.Type))
+	b.WriteString(row("Key Algorithm", orDash(cert.KeyAlgorithm)))
+	b.WriteString(row("Region", cert.Region))
+
+	b.WriteString(sectionStyle.Render("Validity") + "\n")
+	notBefore := "-"
+	if !cert.NotBefore.IsZero() {
+		notBefore = cert.NotBefore.In(time.Local).Format("2006-01-02")
+	}
+	b.WriteString(row("Not Before", notBefore))
+	b.WriteString(row("Not After (Expiry)", cert.ExpiryStr()))
+
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("Subject Alternative Names (%d)", len(cert.SANs))) + "\n")
+	if len(cert.SANs) == 0 {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		for _, san := range cert.SANs {
+			b.WriteString("  " + valueStyle.Render(san) + "\n")
+		}
+	}
+
+	b.WriteString(sectionStyle.Render(fmt.Sprintf("In Use By (%d)", len(cert.InUseBy))) + "\n")
+	if len(cert.InUseBy) == 0 {
+		b.WriteString("  " + tagStyle.Render("-") + "\n")
+	} else {
+		for _, arn := range cert.InUseBy {
+			b.WriteString("  " + valueStyle.Render(arn) + "\n")
+		}
+	}
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	return b.String()
+}
+
+func coloredCertStatus(status string) string {
+	switch status {
+	case "ISSUED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Render(status)
+	case "EXPIRED", "REVOKED", "FAILED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(status)
+	case "PENDING_VALIDATION":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(status)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(status)
+	}
 }
 
 func renderTags(tags map[string]string) string {

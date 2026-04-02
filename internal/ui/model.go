@@ -56,6 +56,11 @@ type enisLoadedMsg struct {
 	errs []error
 }
 
+type certsLoadedMsg struct {
+	certs []awsclient.Certificate
+	errs  []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -74,6 +79,7 @@ const (
 	viewVPC
 	viewSubnet
 	viewTGW
+	viewACM
 )
 
 type screen int
@@ -91,6 +97,7 @@ var viewNames = map[viewType]string{
 	viewVPC:    "vpc",
 	viewSubnet: "subnet",
 	viewTGW:    "tgw",
+	viewACM:    "acm",
 }
 
 // --- sort ---
@@ -117,6 +124,9 @@ const (
 	sortResourceID
 	sortOwnerID
 	sortResourceType
+	sortDomainName
+	sortExpiry
+	sortCertStatus
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -134,7 +144,13 @@ var subnetSortCols = []sortCol{sortProfile, sortName, sortInstanceID, sortVpcID,
 // TGW:    1=Profile 2=TgwID 3=AttachmentID 4=Type 5=ResourceID 6=Owner 7=TgwOwner 8=State 9=Region
 var tgwSortCols = []sortCol{sortProfile, sortTgwID, sortAttachmentID, sortResourceType, sortResourceID, sortOwnerID, sortOwnerID, sortState, sortRegion}
 
+// ACM:    1=Profile 2=DomainName 3=Status 4=Type 5=Expiry 6=Region
+var acmSortCols = []sortCol{sortProfile, sortDomainName, sortCertStatus, sortType, sortExpiry, sortRegion}
+
 var sortColNames = map[sortCol]string{
+	sortDomainName: "Domain",
+	sortExpiry:     "Expiry",
+	sortCertStatus: "Status",
 	sortProfile:    "Profile",
 	sortName:       "Name",
 	sortInstanceID: "Instance ID",
@@ -191,12 +207,14 @@ type Model struct {
 	tgwRoutes        []awsclient.TGWRoute
 	tgwAssociations  []awsclient.TGWAssociation
 	selectedTGWAtt            *awsclient.TGWAttachment
+	selectedCert              *awsclient.Certificate
 	connectivitySrcSubnet     *awsclient.Subnet
 	connectivitySelectedRoute *awsclient.SubnetTGWRoute // nil = phase1(route 선택), non-nil = phase2(subnet 선택)
 	connectivityResult        *awsclient.ConnectivityResult
 	connectivityCursor  int
 	routeTables         []awsclient.VPCRouteTable
 	enis                []awsclient.ENI
+	certs               []awsclient.Certificate
 	profileToAccount    map[string]string // profile → accountID
 	accountToProfile    map[string]string // accountID → profile
 	fetchErr         []error
@@ -212,11 +230,12 @@ type Model struct {
 	detailHistory  []detailSnapshot // 뒤로가기 스택
 	colOffset      int // 가로 스크롤: 첫 번째로 보이는 컬럼 인덱스
 	// 현재 테이블에 표시 중인 데이터 (커서 기반 선택에 사용)
-	displayedInstances   []awsclient.Instance
-	displayedGroups      []awsclient.SecurityGroup
-	displayedVPCs        []awsclient.VPC
-	displayedSubnets     []awsclient.Subnet
-	displayedAttachments []awsclient.TGWAttachment
+	displayedInstances    []awsclient.Instance
+	displayedGroups       []awsclient.SecurityGroup
+	displayedVPCs         []awsclient.VPC
+	displayedSubnets      []awsclient.Subnet
+	displayedAttachments  []awsclient.TGWAttachment
+	displayedCerts        []awsclient.Certificate
 }
 
 func New() Model {
@@ -249,6 +268,7 @@ func (m Model) Init() tea.Cmd {
 		fetchRouteTablesWithRegions(regions),
 		fetchAccountIDs(),
 		fetchENIsWithRegions(regions),
+		fetchCertificatesWithRegions(regions),
 	)
 }
 
@@ -305,6 +325,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.enis = msg.enis
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 
+	case certsLoadedMsg:
+		m.certs = msg.certs
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+
 	case routeTablesLoadedMsg:
 		m.routeTables = msg.tables
 		m.fetchErr = append(m.fetchErr, msg.errs...)
@@ -331,6 +355,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case " ":
 				m.regions[m.regionCursor].selected = !m.regions[m.regionCursor].selected
+			case "a":
+				for i := range m.regions {
+					m.regions[i].selected = true
+				}
+			case "n":
+				// 전체 해제 (최소 1개 유지: 현재 커서 위치)
+				for i := range m.regions {
+					m.regions[i].selected = false
+				}
+				m.regions[m.regionCursor].selected = true
 			case "enter":
 				ids := selectedRegionIDs(m.regions)
 				if len(ids) == 0 {
@@ -351,8 +385,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tgwAssociations = nil
 				m.routeTables = nil
 				m.enis = nil
+				m.certs = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -536,6 +571,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = screenTable
 					m.selectedInst = nil
 					m.selectedTGWAtt = nil
+					m.selectedCert = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -630,6 +666,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = -1
 						m.detailHistory = nil
 					}
+				case viewACM:
+					if cert := m.selectedCert_(); cert != nil {
+						m.selectedCert = cert
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt = nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
 				}
 				return m, nil
 			case "c":
@@ -671,8 +716,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tgwAssociations = nil
 				m.routeTables = nil
 				m.enis = nil
+				m.certs = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids))
 			case "R":
 				m.screen = screenRegion
 				m.regionCursor = 0
@@ -926,6 +972,14 @@ func (m *Model) selectedTGWAtt_() *awsclient.TGWAttachment {
 	return nil
 }
 
+func (m *Model) selectedCert_() *awsclient.Certificate {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedCerts) {
+		return &m.displayedCerts[c]
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
 	switch m.view {
@@ -937,6 +991,8 @@ func (m *Model) sortByIndex(n int) {
 		cols = subnetSortCols
 	case viewTGW:
 		cols = tgwSortCols
+	case viewACM:
+		cols = acmSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return
@@ -1098,6 +1154,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewSubnet
 	case "tgw":
 		m.view = viewTGW
+	case "acm":
+		m.view = viewACM
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -1120,6 +1178,9 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewTGW:
 		m.displayedAttachments = filterTGWData(m.sortedAttachments(), m.filters)
 		return buildTGWTable(rowsSliced(tgwRows(m.displayedAttachments, m.accountToProfile), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewACM:
+		m.displayedCerts = filterCertData(m.sortedCerts(), m.filters)
+		return buildACMTable(rowsSliced(certRows(m.displayedCerts), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -1155,6 +1216,8 @@ func (m *Model) maxColOffset() int {
 		return 6
 	case viewTGW:
 		return 8
+	case viewACM:
+		return 5
 	}
 	return 0
 }
@@ -1491,6 +1554,79 @@ func tgwRows(atts []awsclient.TGWAttachment, accountToProfile map[string]string)
 		}
 	}
 	return rows
+}
+
+// --- ACM table ---
+
+func buildACMTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile,    "Profile",     profileWidth),
+		h(2, sortDomainName, "Domain Name", 36),
+		h(3, sortCertStatus, "Status",      20),
+		h(4, sortType,       "Type",        16),
+		h(5, sortExpiry,     "Expiry",      14),
+		h(6, sortRegion,     "Region",      18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterCertData(certs []awsclient.Certificate, filters []string) []awsclient.Certificate {
+	if len(filters) == 0 {
+		return certs
+	}
+	var out []awsclient.Certificate
+	for _, c := range certs {
+		if matchAll(filters, c.Profile, c.DomainName, c.Status, c.Type, c.Region) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func certRows(certs []awsclient.Certificate) []table.Row {
+	rows := make([]table.Row, len(certs))
+	for i, c := range certs {
+		rows[i] = table.Row{c.Profile, c.DomainName, c.Status, c.Type, c.ExpiryStr(), c.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedCerts() []awsclient.Certificate {
+	certs := make([]awsclient.Certificate, len(m.certs))
+	copy(certs, m.certs)
+	if m.sortBy == sortNone {
+		return certs
+	}
+	sort.Slice(certs, func(i, j int) bool {
+		a, b := certs[i], certs[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortDomainName:
+			less = a.DomainName < b.DomainName
+		case sortCertStatus:
+			less = a.Status < b.Status
+		case sortType:
+			less = a.Type < b.Type
+		case sortExpiry:
+			less = a.NotAfter.Before(b.NotAfter)
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return certs
 }
 
 // --- shared table builder ---
