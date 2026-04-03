@@ -1382,7 +1382,7 @@ func (m *Model) detailInteractiveFieldCount() int {
 		return 0
 	}
 	if m.selectedRDS != nil {
-		return len(m.selectedRDS.SubnetIDs) + len(m.selectedRDS.SecurityGroupIDs)
+		return len(m.selectedRDS.SubnetIDs) + len(m.selectedRDS.SecurityGroupIDs) + len(m.rdsENIs)
 	}
 	return 0
 }
@@ -1593,10 +1593,11 @@ func (m *Model) navigateFromDetail() tea.Cmd {
 		return nil
 	}
 
-	// RDS Subnet / SG → 상세 진입
+	// RDS Subnet / SG / ENI → 상세 진입
 	if m.selectedRDS != nil {
 		rds := m.selectedRDS
 		subnetCount := len(rds.SubnetIDs)
+		sgCount := len(rds.SecurityGroupIDs)
 		snapshot := detailSnapshot{
 			selectedRDS:  rds,
 			detailScroll: m.detailScroll,
@@ -1614,9 +1615,17 @@ func (m *Model) navigateFromDetail() tea.Cmd {
 					return nil
 				}
 			}
+		} else if eniIdx := m.detailCursor - subnetCount - sgCount; eniIdx >= 0 && eniIdx < len(m.rdsENIs) {
+			eni := m.rdsENIs[eniIdx]
+			m.detailHistory = append(m.detailHistory, snapshot)
+			m.selectedENI = &eni
+			m.selectedRDS = nil
+			m.detailScroll = 0
+			m.detailCursor = -1
+			return nil
 		} else {
 			sgIdx := m.detailCursor - subnetCount
-			if sgIdx < len(rds.SecurityGroupIDs) {
+			if sgIdx < sgCount {
 				sgID := rds.SecurityGroupIDs[sgIdx]
 				for i := range m.groups {
 					if m.groups[i].GroupID == sgID {

@@ -1235,7 +1235,8 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	} else if len(enis) == 0 {
 		b.WriteString("  " + tagStyle.Render("-") + "\n")
 	} else {
-		for _, e := range enis {
+		sgCount := len(db.SecurityGroupIDs)
+		for i, e := range enis {
 			ip := e.PrivateIP
 			if len(e.PrivateIPs) > 1 {
 				ip = strings.Join(e.PrivateIPs, ", ")
@@ -1244,11 +1245,12 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 			if e.ENIID == primaryENIID {
 				role = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("primary")
 			}
-			b.WriteString("  " + valueStyle.Render(e.ENIID) +
+			val := valueStyle.Render(e.ENIID) +
 				"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render(ip) +
 				"  " + mapSepStyle.Render(e.Status) +
 				"  " + mapSepStyle.Render(orDash(e.AvailabilityZone)) +
-				"  " + role + "\n")
+				"  " + role
+			b.WriteString(rowMaybeActive(fmt.Sprintf("ENI %d", i+1), val, detailCursor == subnetCount+sgCount+i))
 		}
 	}
 
