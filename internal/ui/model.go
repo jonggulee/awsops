@@ -923,7 +923,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// RDS로 돌아올 때 ENI re-fetch
 					if m.selectedRDS != nil {
 						m.rdsENIs = nil
-						return m, fetchENIsForRDS(m.selectedRDS.Profile, m.selectedRDS.Region, m.selectedRDS.VpcID, m.selectedRDS.DBInstanceID)
+						return m, fetchENIsForRDS(m.selectedRDS.Endpoint, m.enis)
 					}
 				} else {
 					m.screen = screenTable
@@ -1158,7 +1158,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = -1
 						m.detailHistory = nil
 						m.rdsENIs = nil // trigger lazy fetch
-						return m, fetchENIsForRDS(db.Profile, db.Region, db.VpcID, db.DBInstanceID)
+						return m, fetchENIsForRDS(db.Endpoint, m.enis)
 					}
 				}
 				return m, nil

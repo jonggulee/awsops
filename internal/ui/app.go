@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -125,10 +126,34 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 
 // --- RDS lazy fetch ---
 
-func fetchENIsForRDS(profile, region, vpcID, dbInstanceID string) tea.Cmd {
+// fetchENIsForRDS resolves the RDS endpoint hostname to an IP and finds the
+// matching ENI from the already-loaded ENI list. No additional AWS API call needed.
+func fetchENIsForRDS(endpoint string, allENIs []awsclient.ENI) tea.Cmd {
 	return func() tea.Msg {
-		enis, err := awsclient.FetchENIsForRDS(context.Background(), profile, region, vpcID, dbInstanceID)
-		return rdsENIsLoadedMsg{enis: enis, err: err}
+		if endpoint == "" {
+			return rdsENIsLoadedMsg{enis: []awsclient.ENI{}}
+		}
+		addrs, err := net.LookupHost(endpoint)
+		if err != nil {
+			return rdsENIsLoadedMsg{enis: []awsclient.ENI{}, err: err}
+		}
+		ipSet := make(map[string]bool, len(addrs))
+		for _, a := range addrs {
+			ipSet[a] = true
+		}
+		var matched []awsclient.ENI
+		for _, e := range allENIs {
+			for _, ip := range e.PrivateIPs {
+				if ipSet[ip] {
+					matched = append(matched, e)
+					break
+				}
+			}
+		}
+		if matched == nil {
+			matched = []awsclient.ENI{}
+		}
+		return rdsENIsLoadedMsg{enis: matched}
 	}
 }
 
