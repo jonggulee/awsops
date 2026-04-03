@@ -273,6 +273,7 @@ type detailSnapshot struct {
 	selectedSG          *awsclient.SecurityGroup
 	selectedVPC         *awsclient.VPC
 	selectedSubnet      *awsclient.Subnet
+	selectedENI         *awsclient.ENI
 	selectedEKS         *awsclient.EKSCluster
 	selectedRoute53     *awsclient.Route53Record
 	selectedALB         *awsclient.LoadBalancer
@@ -915,6 +916,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedSG = prev.selectedSG
 					m.selectedVPC = prev.selectedVPC
 					m.selectedSubnet = prev.selectedSubnet
+					m.selectedENI = prev.selectedENI
 					m.selectedEKS = prev.selectedEKS
 					m.selectedRoute53 = prev.selectedRoute53
 					m.selectedALB = prev.selectedALB
