@@ -24,8 +24,8 @@ var pickerResources = []resourceItem{
 	{"Subnets", "subnet", "VPC"},
 	{"Transit Gateways", "tgw", "VPC"},
 	{"Clusters", "eks", "EKS"},
-	{"DB Instances", "rds", "RDS"},
-	{"Certificates", "acm", "ACM"},
+	{"DB Instances", "rds", "Aurora and RDS"},
+	{"Certificates", "acm", "AWS Certificate Manager"},
 	{"Records", "route53", "Route 53"},
 }
 
@@ -38,8 +38,8 @@ var viewBreadcrumb = map[viewType]string{
 	viewSubnet:  "VPC  ›  Subnets",
 	viewTGW:     "VPC  ›  Transit Gateways",
 	viewEKS:     "EKS  ›  Clusters",
-	viewRDS:     "RDS  ›  DB Instances",
-	viewACM:     "ACM  ›  Certificates",
+	viewRDS:     "Aurora and RDS  ›  DB Instances",
+	viewACM:     "AWS Certificate Manager  ›  Certificates",
 	viewRoute53: "Route 53  ›  Records",
 	viewALB:     "EC2  ›  Load Balancers",
 }
