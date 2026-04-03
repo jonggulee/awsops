@@ -766,7 +766,7 @@ func renderNodegroupBlock(ng awsclient.EKSNodegroup) string {
 	return b.String()
 }
 
-func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
+func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, listeners []awsclient.Listener, spinnerView string, detailCursor int, hasHistory bool) string {
 	if lb == nil {
 		return ""
 	}
@@ -787,6 +787,18 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 	b.WriteString(row("VPC ID",   withName(lb.VpcID, vpcName)))
 	b.WriteString(row("DNS Name", lb.DNSName))
 
+	// Listeners 섹션 (lazy loaded)
+	if listeners == nil {
+		b.WriteString(sectionStyle.Render("Listeners") + "\n")
+		b.WriteString("  " + spinnerView + " Loading...\n")
+	} else if len(listeners) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Listeners (%d)", len(listeners))) + "\n")
+		for i, li := range listeners {
+			label := fmt.Sprintf("Listener %d", i+1)
+			b.WriteString(rowMaybeActive(label, li.Title(), detailCursor == i))
+		}
+	}
+
 	if len(lb.AvailabilityZones) > 0 {
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Availability Zones (%d)", len(lb.AvailabilityZones))) + "\n")
 		for _, az := range lb.AvailabilityZones {
@@ -794,11 +806,12 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 		}
 	}
 
+	listenerCount := len(listeners)
 	if len(lb.SecurityGroupIDs) > 0 {
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(lb.SecurityGroupIDs))) + "\n")
 		for i, sgID := range lb.SecurityGroupIDs {
 			label := fmt.Sprintf("SG %d", i+1)
-			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == i))
+			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == listenerCount+i))
 		}
 	}
 
@@ -817,14 +830,254 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open SG    ↑/↓  navigate    j/k  scroll"
+		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select SG    j/k  scroll"
+		hint = "esc  back ◀    ↑/↓  select listener / SG    j/k  scroll"
 	default:
-		hint = "esc / q  back to list    ↑/↓  select SG    j/k  scroll"
+		hint = "esc / q  back to list    ↑/↓  select listener / SG    j/k  scroll"
 	}
 	b.WriteString("\n" + helpStyle.Render(hint))
 	return b.String()
+}
+
+func renderListenerDetail(li *awsclient.Listener, rules []awsclient.ListenerRule, spinnerView string, tgNames map[string]string, detailCursor int, hasHistory bool) string {
+	if li == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Listener  ›  %s", li.Title())) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Protocol",   li.Protocol))
+	b.WriteString(row("Port",       fmt.Sprintf("%d", li.Port)))
+	if li.SSLPolicy != "" {
+		b.WriteString(row("SSL Policy", li.SSLPolicy))
+	}
+
+	if len(li.CertARNs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Certificates (%d)", len(li.CertARNs))) + "\n")
+		for _, arn := range li.CertARNs {
+			b.WriteString("  " + valueStyle.Render(arn) + "\n")
+		}
+	}
+
+	if li.IsALB() {
+		// ALB: rules (lazy loaded)
+		if rules == nil {
+			b.WriteString(sectionStyle.Render("Rules") + "\n")
+			b.WriteString("  " + spinnerView + " Loading...\n")
+		} else {
+			b.WriteString(sectionStyle.Render(fmt.Sprintf("Rules (%d)", len(rules))) + "\n")
+			for i, r := range rules {
+				label := fmt.Sprintf("Rule %d", i+1)
+				if r.IsDefault {
+					label = "Default"
+				}
+				summary := ruleSummary(r, tgNames)
+				b.WriteString(rowMaybeActive(label, summary, detailCursor == i))
+			}
+		}
+	} else {
+		// NLB: default action
+		b.WriteString(sectionStyle.Render("Default Action") + "\n")
+		for i, a := range li.DefaultActions {
+			if a.Type == "forward" && a.TargetGroupARN != "" {
+				name := tgNames[a.TargetGroupARN]
+				label := "Target Group"
+				b.WriteString(rowMaybeActive(label, withName(a.TargetGroupARN, name), detailCursor == i))
+			}
+		}
+	}
+
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  select rule    j/k  scroll"
+	default:
+		hint = "esc / q  back    ↑/↓  select rule    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
+func ruleSummary(r awsclient.ListenerRule, tgNames map[string]string) string {
+	var parts []string
+	for _, c := range r.Conditions {
+		if len(c.Values) > 0 {
+			parts = append(parts, c.Field+": "+strings.Join(c.Values, ", "))
+		}
+	}
+	condStr := strings.Join(parts, "  |  ")
+	tgARNs := r.ForwardTGARNs()
+	var actionStr string
+	if len(tgARNs) > 0 {
+		name := tgNames[tgARNs[0]]
+		if name != "" {
+			actionStr = "→ " + name
+		} else {
+			actionStr = "→ " + tgARNs[0]
+		}
+	} else {
+		for _, a := range r.Actions {
+			if a.Type == "redirect" {
+				actionStr = "↪ " + a.RedirectCode + " " + a.RedirectTarget
+				break
+			} else if a.Type == "fixed-response" {
+				actionStr = "▪ fixed-response"
+				break
+			}
+		}
+	}
+	if condStr != "" && actionStr != "" {
+		return condStr + "  " + nameTagStyle.Render(actionStr)
+	}
+	if actionStr != "" {
+		return nameTagStyle.Render(actionStr)
+	}
+	return condStr
+}
+
+func renderRuleDetail(rule *awsclient.ListenerRule, tgNames map[string]string, detailCursor int, hasHistory bool) string {
+	if rule == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	priority := rule.Priority
+	if rule.IsDefault {
+		priority = "default"
+	}
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Rule  ›  Priority %s", priority)) + "\n")
+
+	if len(rule.Conditions) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Conditions (%d)", len(rule.Conditions))) + "\n")
+		for _, c := range rule.Conditions {
+			b.WriteString(row(c.Field, strings.Join(c.Values, ", ")))
+		}
+	} else {
+		b.WriteString(sectionStyle.Render("Conditions") + "\n")
+		b.WriteString("  " + valueStyle.Render("(default rule — matches all requests)") + "\n")
+	}
+
+	b.WriteString(sectionStyle.Render("Actions") + "\n")
+	tgARNs := rule.ForwardTGARNs()
+	for i, tgARN := range tgARNs {
+		name := tgNames[tgARN]
+		b.WriteString(rowMaybeActive("Target Group", withName(tgARN, name), detailCursor == i))
+	}
+	for _, a := range rule.Actions {
+		switch a.Type {
+		case "redirect":
+			b.WriteString(row("Redirect", fmt.Sprintf("%s  %s", a.RedirectCode, a.RedirectTarget)))
+		case "fixed-response":
+			b.WriteString(row("Fixed Response", ""))
+		}
+	}
+
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open target group    ↑/↓  navigate    j/k  scroll"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  select target group    j/k  scroll"
+	default:
+		hint = "esc / q  back    ↑/↓  select target group    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
+func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets []awsclient.TargetEntry, spinnerView string, hasHistory bool) string {
+	if tg == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Target Group  ›  %s", tg.Name)) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Name",        tg.Name))
+	b.WriteString(row("Protocol",    tg.Protocol))
+	if tg.Port > 0 {
+		b.WriteString(row("Port",    fmt.Sprintf("%d", tg.Port)))
+	}
+	b.WriteString(row("Target Type", tg.TargetType))
+	b.WriteString(row("VPC ID",      withName(tg.VpcID, vpcName)))
+
+	hc := tg.HealthCheck
+	b.WriteString(sectionStyle.Render("Health Check") + "\n")
+	b.WriteString(row("Protocol",            hc.Protocol))
+	if hc.Path != "" {
+		b.WriteString(row("Path",            hc.Path))
+	}
+	b.WriteString(row("Port",                hc.Port))
+	b.WriteString(row("Healthy threshold",   fmt.Sprintf("%d", hc.HealthyThreshold)))
+	b.WriteString(row("Unhealthy threshold", fmt.Sprintf("%d", hc.UnhealthyThreshold)))
+	if hc.TimeoutSeconds > 0 {
+		b.WriteString(row("Timeout",         fmt.Sprintf("%ds", hc.TimeoutSeconds)))
+	}
+	if hc.IntervalSeconds > 0 {
+		b.WriteString(row("Interval",        fmt.Sprintf("%ds", hc.IntervalSeconds)))
+	}
+
+	if targets == nil {
+		b.WriteString(sectionStyle.Render("Targets") + "\n")
+		b.WriteString("  " + spinnerView + " Loading...\n")
+	} else {
+		healthy, unhealthy, other := 0, 0, 0
+		for _, t := range targets {
+			switch t.State {
+			case "healthy":
+				healthy++
+			case "unhealthy":
+				unhealthy++
+			default:
+				other++
+			}
+		}
+		title := fmt.Sprintf("Targets (%d)", len(targets))
+		if len(targets) > 0 {
+			title = fmt.Sprintf("Targets (%d  ●%d ○%d)", len(targets), healthy, unhealthy+other)
+		}
+		b.WriteString(sectionStyle.Render(title) + "\n")
+		for _, t := range targets {
+			state := coloredTargetState(t.State)
+			addr := t.ID
+			if t.Port > 0 {
+				addr = fmt.Sprintf("%s:%d", t.ID, t.Port)
+			}
+			line := fmt.Sprintf("%-40s  %-10s  %s", addr, state, t.AZ)
+			if t.Description != "" {
+				line += "  " + nameTagStyle.Render(t.Description)
+			}
+			b.WriteString("  " + line + "\n")
+		}
+	}
+
+	var hint string
+	if hasHistory {
+		hint = "esc  back ◀    j/k  scroll"
+	} else {
+		hint = "esc / q  back    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
+func coloredTargetState(state string) string {
+	switch state {
+	case "healthy":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("● " + state)
+	case "unhealthy":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("○ " + state)
+	case "draining":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("◌ " + state)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("- " + state)
+	}
 }
 
 func coloredALBState(state string) string {

@@ -253,8 +253,14 @@ func (m Model) currentDetailContent() string {
 	case m.selectedRoute53 != nil:
 		aliasLinked := m.selectedRoute53.AliasTarget != "" && m.lookupALBByDNS(m.selectedRoute53.AliasTarget) != nil
 		return renderRoute53Detail(m.selectedRoute53, m.detailCursor, aliasLinked)
+	case m.selectedTargetGroup != nil:
+		return renderTargetGroupDetail(m.selectedTargetGroup, m.lookupVPCName(m.selectedTargetGroup.VpcID), m.tgTargets, m.spinner.View(), len(m.detailHistory) > 0)
+	case m.selectedRule != nil:
+		return renderRuleDetail(m.selectedRule, m.buildTGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
+	case m.selectedListener != nil:
+		return renderListenerDetail(m.selectedListener, m.listenerRules, m.spinner.View(), m.buildTGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
 	case m.selectedALB != nil:
-		return renderALBDetail(m.selectedALB, m.lookupVPCName(m.selectedALB.VpcID), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
+		return renderALBDetail(m.selectedALB, m.lookupVPCName(m.selectedALB.VpcID), m.buildSGNameMap(), m.albListeners, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0)
 	case m.selectedENI != nil:
 		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap())
 	case m.selectedEKS != nil:
@@ -293,6 +299,14 @@ func (m Model) buildSGNameMap() map[string]string {
 	out := make(map[string]string, len(m.groups))
 	for _, sg := range m.groups {
 		out[sg.GroupID] = sg.Name
+	}
+	return out
+}
+
+func (m Model) buildTGNameMap() map[string]string {
+	out := make(map[string]string, len(m.albTargetGroups))
+	for _, tg := range m.albTargetGroups {
+		out[tg.ARN] = tg.Name
 	}
 	return out
 }

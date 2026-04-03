@@ -123,6 +123,36 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+// --- ELB lazy fetch (진입 시점에 특정 LB ARN 기준으로 조회) ---
+
+func fetchListenersForLB(profile, region, lbARN string) tea.Cmd {
+	return func() tea.Msg {
+		listeners, err := awsclient.FetchListenersForLB(context.Background(), profile, region, lbARN)
+		return listenersLoadedMsg{listeners: listeners, err: err}
+	}
+}
+
+func fetchTargetGroupsForLB(profile, region, lbARN string) tea.Cmd {
+	return func() tea.Msg {
+		tgs, err := awsclient.FetchTargetGroupsForLB(context.Background(), profile, region, lbARN)
+		return tgListLoadedMsg{tgs: tgs, err: err}
+	}
+}
+
+func fetchRulesForListener(profile, region, listenerARN string) tea.Cmd {
+	return func() tea.Msg {
+		rules, err := awsclient.FetchRulesForListener(context.Background(), profile, region, listenerARN)
+		return rulesLoadedMsg{rules: rules, err: err}
+	}
+}
+
+func fetchTargetHealthForTG(profile, region, tgARN string) tea.Cmd {
+	return func() tea.Msg {
+		targets, err := awsclient.FetchTargetHealthForTG(context.Background(), profile, region, tgARN)
+		return targetHealthLoadedMsg{targets: targets, err: err}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

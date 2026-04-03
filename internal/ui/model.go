@@ -84,6 +84,26 @@ type rdsLoadedMsg struct {
 	errs      []error
 }
 
+type listenersLoadedMsg struct {
+	listeners []awsclient.Listener
+	err       error
+}
+
+type tgListLoadedMsg struct {
+	tgs []awsclient.TargetGroup
+	err error
+}
+
+type rulesLoadedMsg struct {
+	rules []awsclient.ListenerRule
+	err   error
+}
+
+type targetHealthLoadedMsg struct {
+	targets []awsclient.TargetEntry
+	err     error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -232,16 +252,19 @@ var sortColNames = map[sortCol]string{
 
 // detailSnapshot captures the state of a detail view for back-navigation.
 type detailSnapshot struct {
-	selectedInst    *awsclient.Instance
-	selectedSG      *awsclient.SecurityGroup
-	selectedVPC     *awsclient.VPC
-	selectedSubnet  *awsclient.Subnet
-	selectedEKS     *awsclient.EKSCluster
-	selectedRoute53 *awsclient.Route53Record
-	selectedALB     *awsclient.LoadBalancer
-	selectedRDS     *awsclient.DBInstance
-	detailScroll    int
-	detailCursor    int
+	selectedInst        *awsclient.Instance
+	selectedSG          *awsclient.SecurityGroup
+	selectedVPC         *awsclient.VPC
+	selectedSubnet      *awsclient.Subnet
+	selectedEKS         *awsclient.EKSCluster
+	selectedRoute53     *awsclient.Route53Record
+	selectedALB         *awsclient.LoadBalancer
+	selectedRDS         *awsclient.DBInstance
+	selectedListener    *awsclient.Listener
+	selectedRule        *awsclient.ListenerRule
+	selectedTargetGroup *awsclient.TargetGroup
+	detailScroll        int
+	detailCursor        int
 }
 
 // --- model ---
@@ -319,6 +342,14 @@ type Model struct {
 	rdsInstances          []awsclient.DBInstance
 	displayedRDS          []awsclient.DBInstance
 	selectedRDS           *awsclient.DBInstance
+	// ELB lazy-loaded detail data (nil = loading, non-nil = loaded)
+	albListeners          []awsclient.Listener    // listeners for current selectedALB
+	albTargetGroups       []awsclient.TargetGroup // TGs for current selectedALB
+	listenerRules         []awsclient.ListenerRule // rules for current selectedListener (nil for NLB)
+	tgTargets             []awsclient.TargetEntry  // target health for current selectedTargetGroup
+	selectedListener      *awsclient.Listener
+	selectedRule          *awsclient.ListenerRule
+	selectedTargetGroup   *awsclient.TargetGroup
 }
 
 func New() Model {
@@ -448,6 +479,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
+		}
+
+	case listenersLoadedMsg:
+		m.albListeners = msg.listeners // nil on error → keep showing spinner
+		if msg.err == nil && m.albListeners == nil {
+			m.albListeners = []awsclient.Listener{} // empty, not nil
+		}
+		m.detailCursor = -1 // 커서 리셋 (리스너 로드 완료)
+
+	case tgListLoadedMsg:
+		m.albTargetGroups = msg.tgs
+		if msg.err == nil && m.albTargetGroups == nil {
+			m.albTargetGroups = []awsclient.TargetGroup{}
+		}
+
+	case rulesLoadedMsg:
+		m.listenerRules = msg.rules
+		if msg.err == nil && m.listenerRules == nil {
+			m.listenerRules = []awsclient.ListenerRule{}
+		}
+		m.detailCursor = -1
+
+	case targetHealthLoadedMsg:
+		m.tgTargets = msg.targets
+		if msg.err == nil && m.tgTargets == nil {
+			m.tgTargets = []awsclient.TargetEntry{}
 		}
 
 	case routeTablesLoadedMsg:
@@ -818,6 +875,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedRoute53 = prev.selectedRoute53
 					m.selectedALB = prev.selectedALB
 					m.selectedRDS = prev.selectedRDS
+					m.selectedListener = prev.selectedListener
+					m.selectedRule = prev.selectedRule
+					m.selectedTargetGroup = prev.selectedTargetGroup
 					m.detailScroll = prev.detailScroll
 					m.detailCursor = prev.detailCursor
 				} else {
@@ -830,6 +890,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedRoute53 = nil
 					m.selectedALB = nil
 					m.selectedRDS = nil
+					m.selectedListener = nil
+					m.selectedRule = nil
+					m.selectedTargetGroup = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -849,7 +912,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "enter":
-				m.navigateFromDetail()
+				if cmd := m.navigateFromDetail(); cmd != nil {
+					return m, cmd
+				}
 			case "k":
 				if m.selectedEKS == nil && m.detailScroll > 0 {
 					m.detailScroll--
@@ -964,10 +1029,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if lb := m.selectedALB_(); lb != nil {
 						m.selectedALB = lb
 						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53, m.selectedRDS = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.selectedListener, m.selectedRule, m.selectedTargetGroup = nil, nil, nil
+						m.albListeners = nil
+						m.albTargetGroups = nil
+						m.listenerRules = nil
+						m.tgTargets = nil
 						m.screen = screenDetail
 						m.detailScroll = 0
 						m.detailCursor = -1
 						m.detailHistory = nil
+						return m, tea.Batch(
+							fetchListenersForLB(lb.Profile, lb.Region, lb.ARN),
+							fetchTargetGroupsForLB(lb.Profile, lb.Region, lb.ARN),
+						)
 					}
 				case viewRDS:
 					if db := m.selectedRDS_(); db != nil {
@@ -1174,12 +1248,41 @@ func (m *Model) detailInteractiveFieldCount() int {
 		}
 	}
 	if m.selectedALB != nil {
-		return len(m.selectedALB.SecurityGroupIDs)
+		listenerCount := len(m.albListeners) // 0 if nil (loading)
+		return listenerCount + len(m.selectedALB.SecurityGroupIDs)
+	}
+	if m.selectedListener != nil {
+		if !m.selectedListener.IsALB() {
+			// NLB: default action TG navigable (1 item)
+			for _, a := range m.selectedListener.DefaultActions {
+				if a.Type == "forward" && a.TargetGroupARN != "" {
+					return 1
+				}
+			}
+			return 0
+		}
+		return len(m.listenerRules) // 0 if nil (loading)
+	}
+	if m.selectedRule != nil {
+		return len(m.selectedRule.ForwardTGARNs())
+	}
+	if m.selectedTargetGroup != nil {
+		return 0
 	}
 	if m.selectedRDS != nil {
 		return len(m.selectedRDS.SubnetIDs) + len(m.selectedRDS.SecurityGroupIDs)
 	}
 	return 0
+}
+
+// lookupTGByARN finds a TargetGroup in albTargetGroups by ARN.
+func (m *Model) lookupTGByARN(arn string) *awsclient.TargetGroup {
+	for i := range m.albTargetGroups {
+		if m.albTargetGroups[i].ARN == arn {
+			return &m.albTargetGroups[i]
+		}
+	}
+	return nil
 }
 
 // lookupALBByDNS returns a pointer to the LoadBalancer whose DNSName matches the given target.
@@ -1194,63 +1297,112 @@ func (m *Model) lookupALBByDNS(dnsName string) *awsclient.LoadBalancer {
 }
 
 // navigateFromDetail navigates to the resource pointed to by the current detailCursor.
-func (m *Model) navigateFromDetail() {
-	// EKS 노드 → EC2 인스턴스 상세 진입
-	if m.selectedEKS != nil && m.detailCursor >= 0 {
-		eks := m.selectedEKS
-		nodeCount   := len(eks.Nodes)
-		subnetCount := len(eks.SubnetIDs)
+// Returns a tea.Cmd if a lazy fetch is required (e.g., rules, target health).
+func (m *Model) navigateFromDetail() tea.Cmd {
+	if m.detailCursor < 0 {
+		return nil
+	}
+
+	// ALB detail: Listeners (0..n-1) → Listener 상세, SGs (n..) → SG 상세
+	if m.selectedALB != nil {
+		listenerCount := len(m.albListeners)
 		snapshot := detailSnapshot{
-			selectedEKS:  eks,
+			selectedALB:  m.selectedALB,
 			detailScroll: m.detailScroll,
 			detailCursor: m.detailCursor,
 		}
+		if m.detailCursor < listenerCount {
+			// Listener 상세 진입 + lazy fetch
+			li := m.albListeners[m.detailCursor]
+			m.detailHistory = append(m.detailHistory, snapshot)
+			m.selectedListener = &li
+			m.selectedALB = nil
+			m.listenerRules = nil
+			m.detailScroll = 0
+			m.detailCursor = -1
+			if li.IsALB() {
+				return fetchRulesForListener(li.Profile, li.Region, li.ARN)
+			}
+			// NLB: 룰 없음, 빈 슬라이스로 세팅
+			m.listenerRules = []awsclient.ListenerRule{}
+			return nil
+		}
+		// SG 진입 (기존 동작, 인덱스를 listenerCount만큼 shift)
+		sgIdx := m.detailCursor - listenerCount
+		if sgIdx < len(m.selectedALB.SecurityGroupIDs) {
+			sgID := m.selectedALB.SecurityGroupIDs[sgIdx]
+			for i := range m.groups {
+				if m.groups[i].GroupID == sgID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSG = &m.groups[i]
+					m.selectedALB = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return nil
+				}
+			}
+		}
+		return nil
+	}
 
-		switch {
-		case m.detailCursor < nodeCount:
-			// 노드 → EC2 인스턴스 상세
-			targetID := eks.Nodes[m.detailCursor].InstanceID
-			for i := range m.instances {
-				if m.instances[i].InstanceID == targetID {
-					m.detailHistory = append(m.detailHistory, snapshot)
-					m.selectedInst = &m.instances[i]
-					m.selectedEKS = nil
-					m.detailScroll = 0
-					m.detailCursor = -1
-					return
-				}
+	// Listener detail → Rule 또는 NLB Default TG
+	if m.selectedListener != nil {
+		snapshot := detailSnapshot{
+			selectedListener: m.selectedListener,
+			detailScroll:     m.detailScroll,
+			detailCursor:     m.detailCursor,
+		}
+		if m.selectedListener.IsALB() {
+			// ALB: Rule 상세 진입 (no fetch needed, rule data already loaded)
+			if m.detailCursor < len(m.listenerRules) {
+				rule := m.listenerRules[m.detailCursor]
+				m.detailHistory = append(m.detailHistory, snapshot)
+				m.selectedRule = &rule
+				m.selectedListener = nil
+				m.detailScroll = 0
+				m.detailCursor = -1
 			}
-		case m.detailCursor < nodeCount+subnetCount:
-			// 서브넷 상세
-			subnetID := eks.SubnetIDs[m.detailCursor-nodeCount]
-			for i := range m.subnets {
-				if m.subnets[i].SubnetID == subnetID {
-					m.detailHistory = append(m.detailHistory, snapshot)
-					m.selectedSubnet = &m.subnets[i]
-					m.selectedEKS = nil
-					m.detailScroll = 0
-					m.detailCursor = -1
-					return
-				}
-			}
-		default:
-			// SG 상세
-			sgIdx := m.detailCursor - nodeCount - subnetCount
-			if sgIdx < len(eks.SecurityGroupIDs) {
-				sgID := eks.SecurityGroupIDs[sgIdx]
-				for i := range m.groups {
-					if m.groups[i].GroupID == sgID {
+			return nil
+		}
+		// NLB: Default action TG 진입
+		if m.detailCursor == 0 {
+			for _, a := range m.selectedListener.DefaultActions {
+				if a.Type == "forward" && a.TargetGroupARN != "" {
+					if tg := m.lookupTGByARN(a.TargetGroupARN); tg != nil {
 						m.detailHistory = append(m.detailHistory, snapshot)
-						m.selectedSG = &m.groups[i]
-						m.selectedEKS = nil
+						m.selectedTargetGroup = tg
+						m.selectedListener = nil
+						m.tgTargets = nil
 						m.detailScroll = 0
 						m.detailCursor = -1
-						return
+						return fetchTargetHealthForTG(tg.Profile, tg.Region, tg.ARN)
 					}
 				}
 			}
 		}
-		return
+		return nil
+	}
+
+	// Rule detail → Target Group
+	if m.selectedRule != nil {
+		tgARNs := m.selectedRule.ForwardTGARNs()
+		if m.detailCursor < len(tgARNs) {
+			tgARN := tgARNs[m.detailCursor]
+			if tg := m.lookupTGByARN(tgARN); tg != nil {
+				m.detailHistory = append(m.detailHistory, detailSnapshot{
+					selectedRule: m.selectedRule,
+					detailScroll: m.detailScroll,
+					detailCursor: m.detailCursor,
+				})
+				m.selectedTargetGroup = tg
+				m.selectedRule = nil
+				m.tgTargets = nil
+				m.detailScroll = 0
+				m.detailCursor = -1
+				return fetchTargetHealthForTG(tg.Profile, tg.Region, tg.ARN)
+			}
+		}
+		return nil
 	}
 
 	// Route53 alias → ALB 상세 진입
@@ -1263,14 +1415,74 @@ func (m *Model) navigateFromDetail() {
 			})
 			m.selectedALB = lb
 			m.selectedRoute53 = nil
+			m.albListeners = nil
+			m.albTargetGroups = nil
 			m.detailScroll = 0
 			m.detailCursor = -1
+			return tea.Batch(
+				fetchListenersForLB(lb.Profile, lb.Region, lb.ARN),
+				fetchTargetGroupsForLB(lb.Profile, lb.Region, lb.ARN),
+			)
 		}
-		return
+		return nil
+	}
+
+	// EKS 노드 → EC2 인스턴스 상세 진입
+	if m.selectedEKS != nil {
+		eks := m.selectedEKS
+		nodeCount   := len(eks.Nodes)
+		subnetCount := len(eks.SubnetIDs)
+		snapshot := detailSnapshot{
+			selectedEKS:  eks,
+			detailScroll: m.detailScroll,
+			detailCursor: m.detailCursor,
+		}
+		switch {
+		case m.detailCursor < nodeCount:
+			targetID := eks.Nodes[m.detailCursor].InstanceID
+			for i := range m.instances {
+				if m.instances[i].InstanceID == targetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedInst = &m.instances[i]
+					m.selectedEKS = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return nil
+				}
+			}
+		case m.detailCursor < nodeCount+subnetCount:
+			subnetID := eks.SubnetIDs[m.detailCursor-nodeCount]
+			for i := range m.subnets {
+				if m.subnets[i].SubnetID == subnetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSubnet = &m.subnets[i]
+					m.selectedEKS = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return nil
+				}
+			}
+		default:
+			sgIdx := m.detailCursor - nodeCount - subnetCount
+			if sgIdx < len(eks.SecurityGroupIDs) {
+				sgID := eks.SecurityGroupIDs[sgIdx]
+				for i := range m.groups {
+					if m.groups[i].GroupID == sgID {
+						m.detailHistory = append(m.detailHistory, snapshot)
+						m.selectedSG = &m.groups[i]
+						m.selectedEKS = nil
+						m.detailScroll = 0
+						m.detailCursor = -1
+						return nil
+					}
+				}
+			}
+		}
+		return nil
 	}
 
 	// RDS Subnet / SG → 상세 진입
-	if m.selectedRDS != nil && m.detailCursor >= 0 {
+	if m.selectedRDS != nil {
 		rds := m.selectedRDS
 		subnetCount := len(rds.SubnetIDs)
 		snapshot := detailSnapshot{
@@ -1279,7 +1491,6 @@ func (m *Model) navigateFromDetail() {
 			detailCursor: m.detailCursor,
 		}
 		if m.detailCursor < subnetCount {
-			// Subnet 상세
 			subnetID := rds.SubnetIDs[m.detailCursor]
 			for i := range m.subnets {
 				if m.subnets[i].SubnetID == subnetID {
@@ -1288,11 +1499,10 @@ func (m *Model) navigateFromDetail() {
 					m.selectedRDS = nil
 					m.detailScroll = 0
 					m.detailCursor = -1
-					return
+					return nil
 				}
 			}
 		} else {
-			// SG 상세
 			sgIdx := m.detailCursor - subnetCount
 			if sgIdx < len(rds.SecurityGroupIDs) {
 				sgID := rds.SecurityGroupIDs[sgIdx]
@@ -1303,38 +1513,18 @@ func (m *Model) navigateFromDetail() {
 						m.selectedRDS = nil
 						m.detailScroll = 0
 						m.detailCursor = -1
-						return
+						return nil
 					}
 				}
 			}
 		}
-		return
+		return nil
 	}
 
-	// ALB SG → SG 상세 진입
-	if m.selectedALB != nil && m.detailCursor >= 0 && m.detailCursor < len(m.selectedALB.SecurityGroupIDs) {
-		sgID := m.selectedALB.SecurityGroupIDs[m.detailCursor]
-		for i := range m.groups {
-			if m.groups[i].GroupID == sgID {
-				m.detailHistory = append(m.detailHistory, detailSnapshot{
-					selectedALB:  m.selectedALB,
-					detailScroll: m.detailScroll,
-					detailCursor: m.detailCursor,
-				})
-				m.selectedSG = &m.groups[i]
-				m.selectedALB = nil
-				m.detailScroll = 0
-				m.detailCursor = -1
-				return
-			}
-		}
-		return
+	// EC2 detail: VPC(0), Subnet(1), SG(2+)
+	if m.selectedInst == nil {
+		return nil
 	}
-
-	if m.selectedInst == nil || m.detailCursor < 0 {
-		return
-	}
-	// 현재 상태를 히스토리에 push
 	snapshot := detailSnapshot{
 		selectedInst:   m.selectedInst,
 		selectedSG:     m.selectedSG,
@@ -1343,9 +1533,8 @@ func (m *Model) navigateFromDetail() {
 		detailScroll:   m.detailScroll,
 		detailCursor:   m.detailCursor,
 	}
-
 	switch m.detailCursor {
-	case 0: // VPC ID
+	case 0:
 		for i := range m.vpcs {
 			if m.vpcs[i].VpcID == m.selectedInst.VpcID {
 				m.detailHistory = append(m.detailHistory, snapshot)
@@ -1353,10 +1542,10 @@ func (m *Model) navigateFromDetail() {
 				m.selectedInst, m.selectedSG, m.selectedSubnet = nil, nil, nil
 				m.detailScroll = 0
 				m.detailCursor = -1
-				return
+				return nil
 			}
 		}
-	case 1: // Subnet ID
+	case 1:
 		for i := range m.subnets {
 			if m.subnets[i].SubnetID == m.selectedInst.SubnetID {
 				m.detailHistory = append(m.detailHistory, snapshot)
@@ -1364,10 +1553,10 @@ func (m *Model) navigateFromDetail() {
 				m.selectedInst, m.selectedSG, m.selectedVPC = nil, nil, nil
 				m.detailScroll = 0
 				m.detailCursor = -1
-				return
+				return nil
 			}
 		}
-	default: // SG (cursor 2+)
+	default:
 		sgIdx := m.detailCursor - 2
 		if sgIdx < len(m.selectedInst.SecurityGroups) {
 			targetID := m.selectedInst.SecurityGroups[sgIdx].ID
@@ -1378,11 +1567,12 @@ func (m *Model) navigateFromDetail() {
 					m.selectedInst, m.selectedVPC, m.selectedSubnet = nil, nil, nil
 					m.detailScroll = 0
 					m.detailCursor = -1
-					return
+					return nil
 				}
 			}
 		}
 	}
+	return nil
 }
 
 // selectedInstance returns the Instance at the current table cursor position.
