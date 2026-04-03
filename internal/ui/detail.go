@@ -22,7 +22,13 @@ var (
 	nameTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // 이름 힌트: 연두색
 )
 
-func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool, typeSpecs map[string]awsclient.InstanceTypeSpec) string {
+// detailHintBar renders a styled hint bar (same visual as main hintBar) for detail screens.
+func detailHintBar(width int, items ...string) string {
+	content := strings.Join(items, hintBarStyle.Render("  "))
+	return "\n" + hintBarStyle.Width(width).Render(content)
+}
+
+func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool, typeSpecs map[string]awsclient.InstanceTypeSpec, width int) string {
 	if inst == nil {
 		return ""
 	}
@@ -78,18 +84,18 @@ func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCu
 
 	// Tags
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
-	b.WriteString(renderTags(inst.Tags))
+	b.WriteString(renderTags(inst.Tags, width))
 
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open detail    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select field    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back to list    ↑/↓  select field    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 
 	return b.String()
 }
@@ -133,7 +139,7 @@ func nameOrID(inst *awsclient.Instance) string {
 	return inst.InstanceID
 }
 
-func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[string]string, enis []awsclient.ENI) string {
+func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[string]string, enis []awsclient.ENI, width int) string {
 	if sg == nil {
 		return ""
 	}
@@ -175,7 +181,7 @@ func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[str
 		b.WriteString(renderENIs(enis))
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(width, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
@@ -237,7 +243,7 @@ func renderENIs(enis []awsclient.ENI) string {
 	return b.String()
 }
 
-func renderVPCDetail(vpc *awsclient.VPC) string {
+func renderVPCDetail(vpc *awsclient.VPC, width int) string {
 	if vpc == nil {
 		return ""
 	}
@@ -254,13 +260,13 @@ func renderVPCDetail(vpc *awsclient.VPC) string {
 	b.WriteString(row("Region", vpc.Region))
 
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
-	b.WriteString(renderTags(vpc.Tags))
+	b.WriteString(renderTags(vpc.Tags, width))
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(width, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
-func renderSubnetDetail(subnet *awsclient.Subnet) string {
+func renderSubnetDetail(subnet *awsclient.Subnet, width int) string {
 	if subnet == nil {
 		return ""
 	}
@@ -279,13 +285,13 @@ func renderSubnetDetail(subnet *awsclient.Subnet) string {
 	b.WriteString(row("Region", subnet.Region))
 
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
-	b.WriteString(renderTags(subnet.Tags))
+	b.WriteString(renderTags(subnet.Tags, width))
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(width, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
-func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map[string]string) string {
+func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map[string]string, width int) string {
 	if eni == nil {
 		return ""
 	}
@@ -326,11 +332,11 @@ func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map
 		b.WriteString("  " + valueStyle.Render(withName(sgID, name)) + "\n")
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(width, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
-func renderCertDetail(cert *awsclient.Certificate) string {
+func renderCertDetail(cert *awsclient.Certificate, width int) string {
 	if cert == nil {
 		return ""
 	}
@@ -373,7 +379,7 @@ func renderCertDetail(cert *awsclient.Certificate) string {
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(width, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
@@ -390,7 +396,7 @@ func coloredCertStatus(status string) string {
 	}
 }
 
-func renderTags(tags map[string]string) string {
+func renderTags(tags map[string]string, width int) string {
 	if len(tags) == 0 {
 		return "  " + tagStyle.Render("-") + "\n"
 	}
@@ -412,13 +418,23 @@ func renderTags(tags map[string]string) string {
 	}
 	tagLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Width(maxKeyLen + 2)
 
+	// 2(indent) + (maxKeyLen+2)(label) + value 로 width를 초과하지 않도록 동적으로 자름
+	maxValLen := width - 2 - (maxKeyLen + 2)
+	if maxValLen < 20 {
+		maxValLen = 20
+	}
+
 	var b strings.Builder
 	for _, k := range keys {
 		displayKey := k
 		if len(k) > maxTagKeyWidth {
 			displayKey = k[:maxTagKeyWidth-1] + "…"
 		}
-		b.WriteString("  " + tagLabelStyle.Render(displayKey) + valueStyle.Render(tags[k]) + "\n")
+		val := tags[k]
+		if len(val) > maxValLen {
+			val = val[:maxValLen-3] + "..."
+		}
+		b.WriteString("  " + tagLabelStyle.Render(displayKey) + valueStyle.Render(val) + "\n")
 	}
 	return b.String()
 }
@@ -549,7 +565,7 @@ func renderTGWAttDetail(
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list"))
+	b.WriteString(detailHintBar(termWidth, hintItem("esc/q", "Back to list")))
 	return b.String()
 }
 
@@ -566,7 +582,7 @@ func coloredState(state string) string {
 }
 
 
-func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
+func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool, width int) string {
 	if cluster == nil {
 		return ""
 	}
@@ -651,18 +667,18 @@ func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames 
 
 	// Tags
 	b.WriteString(sectionStyle.Render("Tags") + "\n")
-	b.WriteString(renderTags(cluster.Tags))
+	b.WriteString(renderTags(cluster.Tags, width))
 
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open detail    ↑/↓  navigate"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  navigate"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"))
 	default:
-		hint = "esc / q  back to list    ↑/↓  navigate"
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("↑/↓", "Navigate"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
@@ -766,7 +782,7 @@ func renderNodegroupBlock(ng awsclient.EKSNodegroup) string {
 	return b.String()
 }
 
-func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, listeners []awsclient.Listener, spinnerView string, detailCursor int, hasHistory bool) string {
+func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, listeners []awsclient.Listener, spinnerView string, detailCursor int, hasHistory bool, width int) string {
 	if lb == nil {
 		return ""
 	}
@@ -817,30 +833,23 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 
 	if len(lb.Tags) > 0 {
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Tags (%d)", len(lb.Tags))) + "\n")
-		keys := make([]string, 0, len(lb.Tags))
-		for k := range lb.Tags {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			b.WriteString(row(k, tagStyle.Render(lb.Tags[k])))
-		}
+		b.WriteString(renderTags(lb.Tags, width))
 	}
 
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("m", "Resource Map"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select listener / SG    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("m", "Resource Map"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back to list    ↑/↓  select listener / SG    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("m", "Resource Map"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
-func renderListenerDetail(li *awsclient.Listener, rules []awsclient.ListenerRule, spinnerView string, tgNames map[string]string, detailCursor int, hasHistory bool) string {
+func renderListenerDetail(li *awsclient.Listener, rules []awsclient.ListenerRule, spinnerView string, tgNames map[string]string, detailCursor int, hasHistory bool, width int) string {
 	if li == nil {
 		return ""
 	}
@@ -893,13 +902,13 @@ func renderListenerDetail(li *awsclient.Listener, rules []awsclient.ListenerRule
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select rule    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back    ↑/↓  select rule    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
@@ -940,7 +949,7 @@ func ruleSummary(r awsclient.ListenerRule, tgNames map[string]string) string {
 	return condStr
 }
 
-func renderRuleDetail(rule *awsclient.ListenerRule, tgNames map[string]string, detailCursor int, hasHistory bool) string {
+func renderRuleDetail(rule *awsclient.ListenerRule, tgNames map[string]string, detailCursor int, hasHistory bool, width int) string {
 	if rule == nil {
 		return ""
 	}
@@ -980,17 +989,17 @@ func renderRuleDetail(rule *awsclient.ListenerRule, tgNames map[string]string, d
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open target group    ↑/↓  navigate    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select target group    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back    ↑/↓  select target group    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
-func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets []awsclient.TargetEntry, spinnerView string, lookupInstanceName func(string) string, lookupNodeByIP func(string) (string, string), hasHistory bool) string {
+func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets []awsclient.TargetEntry, spinnerView string, lookupInstanceName func(string) string, lookupNodeByIP func(string) (string, string), hasHistory bool, width int) string {
 	if tg == nil {
 		return ""
 	}
@@ -1080,11 +1089,11 @@ func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets 
 
 	var hint string
 	if hasHistory {
-		hint = "esc  back ◀    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("j/k", "Scroll"))
 	} else {
-		hint = "esc / q  back    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
@@ -1114,7 +1123,7 @@ func coloredALBState(state string) string {
 	}
 }
 
-func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLinked bool) string {
+func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLinked bool, width int) string {
 	if rec == nil {
 		return ""
 	}
@@ -1157,17 +1166,17 @@ func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLi
 	var hint string
 	switch {
 	case aliasLinked && detailCursor >= 0:
-		hint = "esc  deselect    enter  open ALB    ↑/↓  select    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open ALB"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case aliasLinked:
-		hint = "esc / q  back    ↑/↓  select alias    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back to list"
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
-func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
+func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool, width int) string {
 	if db == nil {
 		return ""
 	}
@@ -1234,13 +1243,13 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select subnet / SG    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	default:
-		hint = "esc / q  back to list    ↑/↓  select subnet / SG    j/k  scroll"
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
-	b.WriteString("\n" + helpStyle.Render(hint))
+	b.WriteString(hint)
 	return b.String()
 }
 
