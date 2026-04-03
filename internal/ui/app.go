@@ -123,6 +123,15 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+// --- RDS lazy fetch ---
+
+func fetchENIsForRDS(profile, region, vpcID, dbInstanceID string) tea.Cmd {
+	return func() tea.Msg {
+		enis, err := awsclient.FetchENIsForRDS(context.Background(), profile, region, vpcID, dbInstanceID)
+		return rdsENIsLoadedMsg{enis: enis, err: err}
+	}
+}
+
 // --- ELB lazy fetch (진입 시점에 특정 LB ARN 기준으로 조회) ---
 
 func fetchListenersForLB(profile, region, lbARN string) tea.Cmd {

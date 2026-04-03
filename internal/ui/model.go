@@ -84,6 +84,11 @@ type rdsLoadedMsg struct {
 	errs      []error
 }
 
+type rdsENIsLoadedMsg struct {
+	enis []awsclient.ENI
+	err  error
+}
+
 type listenersLoadedMsg struct {
 	listeners []awsclient.Listener
 	err       error
@@ -353,6 +358,7 @@ type Model struct {
 	rdsInstances          []awsclient.DBInstance
 	displayedRDS          []awsclient.DBInstance
 	selectedRDS           *awsclient.DBInstance
+	rdsENIs               []awsclient.ENI // nil = loading, non-nil = loaded
 	// ELB lazy-loaded detail data (nil = loading, non-nil = loaded)
 	albListeners          []awsclient.Listener    // listeners for current selectedALB
 	albTargetGroups       []awsclient.TargetGroup // TGs for current selectedALB
@@ -494,6 +500,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
+		}
+
+	case rdsENIsLoadedMsg:
+		if msg.err == nil {
+			m.rdsENIs = msg.enis
+		} else {
+			m.rdsENIs = []awsclient.ENI{}
 		}
 
 	case listenersLoadedMsg:
@@ -907,6 +920,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedTargetGroup = prev.selectedTargetGroup
 					m.detailScroll = prev.detailScroll
 					m.detailCursor = prev.detailCursor
+					// RDS로 돌아올 때 ENI re-fetch
+					if m.selectedRDS != nil {
+						m.rdsENIs = nil
+						return m, fetchENIsForRDS(m.selectedRDS.Profile, m.selectedRDS.Region, m.selectedRDS.VpcID, m.selectedRDS.DBInstanceID)
+					}
 				} else {
 					m.screen = screenTable
 					m.selectedInst = nil
@@ -920,6 +938,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedListener = nil
 					m.selectedRule = nil
 					m.selectedTargetGroup = nil
+					m.rdsENIs = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -1138,6 +1157,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailScroll = 0
 						m.detailCursor = -1
 						m.detailHistory = nil
+						m.rdsENIs = nil // trigger lazy fetch
+						return m, fetchENIsForRDS(db.Profile, db.Region, db.VpcID, db.DBInstanceID)
 					}
 				}
 				return m, nil

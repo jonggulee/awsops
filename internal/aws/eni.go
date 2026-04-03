@@ -20,9 +20,10 @@ type ENI struct {
 	PrivateIPs       []string // primary + secondary IP 전체 목록 (IP 역추적용)
 	VpcID            string
 	SubnetID         string
-	InstanceID       string // 비어있으면 EC2에 미연결
-	InterfaceType    string
-	SecurityGroupIDs []string
+	InstanceID         string // 비어있으면 EC2에 미연결
+	InterfaceType      string
+	AvailabilityZone   string
+	SecurityGroupIDs   []string
 }
 
 // SecurityGroupIDs returns true if the ENI is associated with the given SG ID.
@@ -99,6 +100,34 @@ func fetchENIs(ctx context.Context, profile, region string) ([]ENI, error) {
 	return enis, nil
 }
 
+// FetchENIsForRDS fetches ENIs associated with an RDS instance.
+// AWS sets description="RDSNetworkInterface" on RDS-managed ENIs.
+// vpcID is used as an additional filter to narrow the results.
+func FetchENIsForRDS(ctx context.Context, profile, region, vpcID, dbInstanceID string) ([]ENI, error) {
+	client, err := NewProfileClient(ctx, profile, region)
+	if err != nil {
+		return nil, err
+	}
+
+	filters := []types.Filter{
+		{Name: aws.String("description"), Values: []string{"RDSNetworkInterface"}},
+		{Name: aws.String("vpc-id"), Values: []string{vpcID}},
+	}
+
+	out, err := client.EC2.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+		Filters: filters,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	enis := make([]ENI, 0, len(out.NetworkInterfaces))
+	for _, ni := range out.NetworkInterfaces {
+		enis = append(enis, toENI(profile, region, ni))
+	}
+	return enis, nil
+}
+
 func toENI(profile, region string, ni types.NetworkInterface) ENI {
 	instanceID := ""
 	if ni.Attachment != nil {
@@ -138,6 +167,7 @@ func toENI(profile, region string, ni types.NetworkInterface) ENI {
 		SubnetID:         aws.ToString(ni.SubnetId),
 		InstanceID:       instanceID,
 		InterfaceType:    string(ni.InterfaceType),
+		AvailabilityZone: aws.ToString(ni.AvailabilityZone),
 		SecurityGroupIDs: sgIDs,
 	}
 }

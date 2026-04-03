@@ -270,7 +270,7 @@ func (m Model) currentDetailContent() string {
 	case m.selectedEKS != nil:
 		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.width)
 	case m.selectedRDS != nil:
-		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.width)
+		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.rdsENIs, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.width)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {
