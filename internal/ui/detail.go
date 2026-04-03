@@ -893,7 +893,7 @@ func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLi
 	return b.String()
 }
 
-func renderRDSDetail(db *awsclient.DBInstance, vpcName string, sgNames map[string]string) string {
+func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
 	if db == nil {
 		return ""
 	}
@@ -919,8 +919,8 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, sgNames map[strin
 	b.WriteString(row("Allocated Storage", fmt.Sprintf("%d GiB", db.AllocatedStorage)))
 
 	b.WriteString(sectionStyle.Render("Network") + "\n")
-	b.WriteString(row("VPC ID",          withName(db.VpcID, vpcName)))
-	b.WriteString(row("Subnet Group",    orDash(db.SubnetGroupName)))
+	b.WriteString(row("VPC ID",            withName(db.VpcID, vpcName)))
+	b.WriteString(row("Subnet Group",      orDash(db.SubnetGroupName)))
 	b.WriteString(row("Availability Zone", orDash(db.AvailabilityZone)))
 	endpoint := orDash(db.Endpoint)
 	if db.Endpoint != "" && db.Port > 0 {
@@ -931,15 +931,15 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, sgNames map[strin
 	if len(db.SubnetIDs) > 0 {
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Subnets (%d)", len(db.SubnetIDs))) + "\n")
 		for _, sid := range db.SubnetIDs {
-			b.WriteString("  " + valueStyle.Render(sid) + "\n")
+			b.WriteString("  " + valueStyle.Render(withName(sid, subnetNames[sid])) + "\n")
 		}
 	}
 
 	if len(db.SecurityGroupIDs) > 0 {
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(db.SecurityGroupIDs))) + "\n")
-		for _, sgID := range db.SecurityGroupIDs {
-			name := sgNames[sgID]
-			b.WriteString("  " + valueStyle.Render(withName(sgID, name)) + "\n")
+		for i, sgID := range db.SecurityGroupIDs {
+			label := fmt.Sprintf("SG %d", i+1)
+			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == i))
 		}
 	}
 
@@ -955,7 +955,16 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, sgNames map[strin
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc / q  back to list    j/k  scroll"))
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open SG    ↑/↓  navigate    j/k  scroll"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  select SG    j/k  scroll"
+	default:
+		hint = "esc / q  back to list    ↑/↓  select SG    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
 	return b.String()
 }
 

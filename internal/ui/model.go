@@ -1173,6 +1173,9 @@ func (m *Model) detailInteractiveFieldCount() int {
 	if m.selectedALB != nil {
 		return len(m.selectedALB.SecurityGroupIDs)
 	}
+	if m.selectedRDS != nil {
+		return len(m.selectedRDS.SecurityGroupIDs)
+	}
 	return 0
 }
 
@@ -1259,6 +1262,26 @@ func (m *Model) navigateFromDetail() {
 			m.selectedRoute53 = nil
 			m.detailScroll = 0
 			m.detailCursor = -1
+		}
+		return
+	}
+
+	// RDS SG → SG 상세 진입
+	if m.selectedRDS != nil && m.detailCursor >= 0 && m.detailCursor < len(m.selectedRDS.SecurityGroupIDs) {
+		sgID := m.selectedRDS.SecurityGroupIDs[m.detailCursor]
+		for i := range m.groups {
+			if m.groups[i].GroupID == sgID {
+				m.detailHistory = append(m.detailHistory, detailSnapshot{
+					selectedRDS:  m.selectedRDS,
+					detailScroll: m.detailScroll,
+					detailCursor: m.detailCursor,
+				})
+				m.selectedSG = &m.groups[i]
+				m.selectedRDS = nil
+				m.detailScroll = 0
+				m.detailCursor = -1
+				return
+			}
 		}
 		return
 	}
