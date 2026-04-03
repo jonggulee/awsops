@@ -17,6 +17,7 @@ type ENI struct {
 	Description      string
 	Status           string
 	PrivateIP        string
+	PrivateIPs       []string // primary + secondary IP 전체 목록 (IP 역추적용)
 	VpcID            string
 	SubnetID         string
 	InstanceID       string // 비어있으면 EC2에 미연결
@@ -117,6 +118,13 @@ func toENI(profile, region string, ni types.NetworkInterface) ENI {
 		}
 	}
 
+	allIPs := make([]string, 0, len(ni.PrivateIpAddresses))
+	for _, pip := range ni.PrivateIpAddresses {
+		if ip := aws.ToString(pip.PrivateIpAddress); ip != "" {
+			allIPs = append(allIPs, ip)
+		}
+	}
+
 	return ENI{
 		Profile:          profile,
 		Region:           region,
@@ -125,6 +133,7 @@ func toENI(profile, region string, ni types.NetworkInterface) ENI {
 		Description:      aws.ToString(ni.Description),
 		Status:           string(ni.Status),
 		PrivateIP:        aws.ToString(ni.PrivateIpAddress),
+		PrivateIPs:       allIPs,
 		VpcID:            aws.ToString(ni.VpcId),
 		SubnetID:         aws.ToString(ni.SubnetId),
 		InstanceID:       instanceID,

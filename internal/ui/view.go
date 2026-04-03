@@ -254,7 +254,7 @@ func (m Model) currentDetailContent() string {
 		aliasLinked := m.selectedRoute53.AliasTarget != "" && m.lookupALBByDNS(m.selectedRoute53.AliasTarget) != nil
 		return renderRoute53Detail(m.selectedRoute53, m.detailCursor, aliasLinked)
 	case m.selectedTargetGroup != nil:
-		return renderTargetGroupDetail(m.selectedTargetGroup, m.lookupVPCName(m.selectedTargetGroup.VpcID), m.tgTargets, m.spinner.View(), len(m.detailHistory) > 0)
+		return renderTargetGroupDetail(m.selectedTargetGroup, m.lookupVPCName(m.selectedTargetGroup.VpcID), m.tgTargets, m.spinner.View(), m.lookupInstanceName, m.lookupNodeByIP, len(m.detailHistory) > 0)
 	case m.selectedRule != nil:
 		return renderRuleDetail(m.selectedRule, m.buildTGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
 	case m.selectedListener != nil:
@@ -301,6 +301,30 @@ func (m Model) buildSGNameMap() map[string]string {
 		out[sg.GroupID] = sg.Name
 	}
 	return out
+}
+
+// lookupInstanceName returns the Name tag of an instance by ID.
+func (m Model) lookupInstanceName(instanceID string) string {
+	for _, inst := range m.instances {
+		if inst.InstanceID == instanceID {
+			return inst.Name
+		}
+	}
+	return ""
+}
+
+// lookupNodeByIP finds the EC2 instance that owns the given IP via ENI secondary IPs.
+// Returns (instanceID, instanceName). Used for IP-type TG targets (e.g., pod IPs).
+func (m Model) lookupNodeByIP(ip string) (string, string) {
+	for _, eni := range m.enis {
+		for _, pip := range eni.PrivateIPs {
+			if pip == ip {
+				name := m.lookupInstanceName(eni.InstanceID)
+				return eni.InstanceID, name
+			}
+		}
+	}
+	return "", ""
 }
 
 func (m Model) buildTGNameMap() map[string]string {

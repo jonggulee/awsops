@@ -990,7 +990,7 @@ func renderRuleDetail(rule *awsclient.ListenerRule, tgNames map[string]string, d
 	return b.String()
 }
 
-func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets []awsclient.TargetEntry, spinnerView string, hasHistory bool) string {
+func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets []awsclient.TargetEntry, spinnerView string, lookupInstanceName func(string) string, lookupNodeByIP func(string) (string, string), hasHistory bool) string {
 	if tg == nil {
 		return ""
 	}
@@ -1049,9 +1049,30 @@ func renderTargetGroupDetail(tg *awsclient.TargetGroup, vpcName string, targets 
 			if t.Port > 0 {
 				addr = fmt.Sprintf("%s:%d", t.ID, t.Port)
 			}
-			line := fmt.Sprintf("%-40s  %-10s  %s", addr, state, t.AZ)
+			var hint string
+			switch tg.TargetType {
+			case "instance":
+				// 인스턴스 ID → 이름 직접 조회
+				if name := lookupInstanceName(t.ID); name != "" {
+					hint = nameTagStyle.Render("[" + name + "]")
+				}
+			case "ip":
+				// IP → ENI secondary IP 역추적 → 노드 확인
+				if instID, name := lookupNodeByIP(t.ID); instID != "" {
+					node := instID
+					if name != "" {
+						node = name + " (" + instID + ")"
+					}
+					hint = nameTagStyle.Render("[node: " + node + "]")
+				}
+			}
+			line := fmt.Sprintf("%-42s", addr)
+			if hint != "" {
+				line += "  " + hint
+			}
+			line += fmt.Sprintf("  %-28s  %s", state, t.AZ)
 			if t.Description != "" {
-				line += "  " + nameTagStyle.Render(t.Description)
+				line += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(t.Description)
 			}
 			b.WriteString("  " + line + "\n")
 		}
