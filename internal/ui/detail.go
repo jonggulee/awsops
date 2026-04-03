@@ -928,10 +928,12 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	}
 	b.WriteString(row("Endpoint", endpoint))
 
-	if len(db.SubnetIDs) > 0 {
-		b.WriteString(sectionStyle.Render(fmt.Sprintf("Subnets (%d)", len(db.SubnetIDs))) + "\n")
-		for _, sid := range db.SubnetIDs {
-			b.WriteString("  " + valueStyle.Render(withName(sid, subnetNames[sid])) + "\n")
+	subnetCount := len(db.SubnetIDs)
+	if subnetCount > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Subnets (%d)", subnetCount)) + "\n")
+		for i, sid := range db.SubnetIDs {
+			label := fmt.Sprintf("Subnet %d", i+1)
+			b.WriteString(rowMaybeActive(label, withName(sid, subnetNames[sid]), detailCursor == i))
 		}
 	}
 
@@ -939,7 +941,7 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(db.SecurityGroupIDs))) + "\n")
 		for i, sgID := range db.SecurityGroupIDs {
 			label := fmt.Sprintf("SG %d", i+1)
-			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == i))
+			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == subnetCount+i))
 		}
 	}
 
@@ -958,11 +960,11 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	var hint string
 	switch {
 	case detailCursor >= 0:
-		hint = "esc  deselect    enter  open SG    ↑/↓  navigate    j/k  scroll"
+		hint = "esc  deselect    enter  open resource    ↑/↓  navigate    j/k  scroll"
 	case hasHistory:
-		hint = "esc  back ◀    ↑/↓  select SG    j/k  scroll"
+		hint = "esc  back ◀    ↑/↓  select subnet / SG    j/k  scroll"
 	default:
-		hint = "esc / q  back to list    ↑/↓  select SG    j/k  scroll"
+		hint = "esc / q  back to list    ↑/↓  select subnet / SG    j/k  scroll"
 	}
 	b.WriteString("\n" + helpStyle.Render(hint))
 	return b.String()

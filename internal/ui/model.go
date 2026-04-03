@@ -1174,7 +1174,7 @@ func (m *Model) detailInteractiveFieldCount() int {
 		return len(m.selectedALB.SecurityGroupIDs)
 	}
 	if m.selectedRDS != nil {
-		return len(m.selectedRDS.SecurityGroupIDs)
+		return len(m.selectedRDS.SubnetIDs) + len(m.selectedRDS.SecurityGroupIDs)
 	}
 	return 0
 }
@@ -1266,21 +1266,43 @@ func (m *Model) navigateFromDetail() {
 		return
 	}
 
-	// RDS SG → SG 상세 진입
-	if m.selectedRDS != nil && m.detailCursor >= 0 && m.detailCursor < len(m.selectedRDS.SecurityGroupIDs) {
-		sgID := m.selectedRDS.SecurityGroupIDs[m.detailCursor]
-		for i := range m.groups {
-			if m.groups[i].GroupID == sgID {
-				m.detailHistory = append(m.detailHistory, detailSnapshot{
-					selectedRDS:  m.selectedRDS,
-					detailScroll: m.detailScroll,
-					detailCursor: m.detailCursor,
-				})
-				m.selectedSG = &m.groups[i]
-				m.selectedRDS = nil
-				m.detailScroll = 0
-				m.detailCursor = -1
-				return
+	// RDS Subnet / SG → 상세 진입
+	if m.selectedRDS != nil && m.detailCursor >= 0 {
+		rds := m.selectedRDS
+		subnetCount := len(rds.SubnetIDs)
+		snapshot := detailSnapshot{
+			selectedRDS:  rds,
+			detailScroll: m.detailScroll,
+			detailCursor: m.detailCursor,
+		}
+		if m.detailCursor < subnetCount {
+			// Subnet 상세
+			subnetID := rds.SubnetIDs[m.detailCursor]
+			for i := range m.subnets {
+				if m.subnets[i].SubnetID == subnetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSubnet = &m.subnets[i]
+					m.selectedRDS = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return
+				}
+			}
+		} else {
+			// SG 상세
+			sgIdx := m.detailCursor - subnetCount
+			if sgIdx < len(rds.SecurityGroupIDs) {
+				sgID := rds.SecurityGroupIDs[sgIdx]
+				for i := range m.groups {
+					if m.groups[i].GroupID == sgID {
+						m.detailHistory = append(m.detailHistory, snapshot)
+						m.selectedSG = &m.groups[i]
+						m.selectedRDS = nil
+						m.detailScroll = 0
+						m.detailCursor = -1
+						return
+					}
+				}
 			}
 		}
 		return
