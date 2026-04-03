@@ -104,6 +104,16 @@ type targetHealthLoadedMsg struct {
 	err     error
 }
 
+type mapRulesLoadedMsg struct {
+	listenerARN string
+	rules       []awsclient.ListenerRule
+}
+
+type mapTargetHealthLoadedMsg struct {
+	tgARN   string
+	targets []awsclient.TargetEntry
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -138,6 +148,7 @@ const (
 	screenRegion              // R 눌렀을 때 리전 선택 화면
 	screenConnectivity        // c 눌렀을 때 연결 체크 화면
 	screenTagPicker           // :tag 명령어로 진입하는 태그 피커
+	screenMap                 // m 눌렀을 때 ELB resource map 화면
 )
 
 var viewNames = map[viewType]string{
@@ -350,6 +361,10 @@ type Model struct {
 	selectedListener      *awsclient.Listener
 	selectedRule          *awsclient.ListenerRule
 	selectedTargetGroup   *awsclient.TargetGroup
+	// Resource Map 데이터
+	mapRules        map[string][]awsclient.ListenerRule // listenerARN → rules
+	mapTargetHealth map[string][]awsclient.TargetEntry  // tgARN → targets
+	mapPending      int                                 // 로딩 중인 fetch 수 (0 = 완료)
 }
 
 func New() Model {
@@ -506,6 +521,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && m.tgTargets == nil {
 			m.tgTargets = []awsclient.TargetEntry{}
 		}
+
+	case mapRulesLoadedMsg:
+		if m.mapRules != nil {
+			m.mapRules[msg.listenerARN] = msg.rules
+		}
+		m.mapPending--
+
+	case mapTargetHealthLoadedMsg:
+		if m.mapTargetHealth != nil {
+			m.mapTargetHealth[msg.tgARN] = msg.targets
+		}
+		m.mapPending--
 
 	case routeTablesLoadedMsg:
 		m.routeTables = msg.tables
@@ -921,6 +948,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "j":
 				if m.selectedEKS == nil && m.detailScroll < m.detailMaxScroll() {
+					m.detailScroll++
+				}
+			case "pgup":
+				m.detailScroll -= pageSize
+				if m.detailScroll < 0 {
+					m.detailScroll = 0
+				}
+			case "pgdown":
+				m.detailScroll += pageSize
+				if max := m.detailMaxScroll(); m.detailScroll > max {
+					m.detailScroll = max
+				}
+			case "m":
+				// ALB resource map 진입 (listeners/TGs가 로드된 경우에만)
+				if m.selectedALB != nil && len(m.albListeners) > 0 && m.albTargetGroups != nil {
+					m.mapRules = make(map[string][]awsclient.ListenerRule)
+					m.mapTargetHealth = make(map[string][]awsclient.TargetEntry)
+					var cmds []tea.Cmd
+					pending := 0
+					for _, li := range m.albListeners {
+						if li.IsALB() {
+							pending++
+							li := li
+							cmds = append(cmds, fetchMapRulesForListener(li.Profile, li.Region, li.ARN))
+						} else {
+							m.mapRules[li.ARN] = []awsclient.ListenerRule{}
+						}
+					}
+					for _, tg := range m.albTargetGroups {
+						pending++
+						tg := tg
+						cmds = append(cmds, fetchMapTargetHealthForTG(tg.Profile, tg.Region, tg.ARN))
+					}
+					m.mapPending = pending
+					m.screen = screenMap
+					m.detailScroll = 0
+					return m, tea.Batch(cmds...)
+				}
+			}
+			return m, nil
+		}
+
+		// Resource Map 화면
+		if m.screen == screenMap {
+			pageSize := m.height / 2
+			if pageSize < 1 {
+				pageSize = 1
+			}
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "q", "m":
+				m.screen = screenDetail
+				m.detailScroll = 0
+			case "k", "up":
+				if m.detailScroll > 0 {
+					m.detailScroll--
+				}
+			case "j", "down":
+				if m.detailScroll < m.detailMaxScroll() {
 					m.detailScroll++
 				}
 			case "pgup":

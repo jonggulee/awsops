@@ -153,6 +153,28 @@ func fetchTargetHealthForTG(profile, region, tgARN string) tea.Cmd {
 	}
 }
 
+// --- Resource Map 전용 fetch (ARN을 메시지에 포함해서 맵에 저장) ---
+
+func fetchMapRulesForListener(profile, region, listenerARN string) tea.Cmd {
+	return func() tea.Msg {
+		rules, _ := awsclient.FetchRulesForListener(context.Background(), profile, region, listenerARN)
+		if rules == nil {
+			rules = []awsclient.ListenerRule{}
+		}
+		return mapRulesLoadedMsg{listenerARN: listenerARN, rules: rules}
+	}
+}
+
+func fetchMapTargetHealthForTG(profile, region, tgARN string) tea.Cmd {
+	return func() tea.Msg {
+		targets, _ := awsclient.FetchTargetHealthForTG(context.Background(), profile, region, tgARN)
+		if targets == nil {
+			targets = []awsclient.TargetEntry{}
+		}
+		return mapTargetHealthLoadedMsg{tgARN: tgARN, targets: targets}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

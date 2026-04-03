@@ -80,6 +80,10 @@ func (m Model) View() string {
 		return applyScrollWithIndicators(m.currentDetailContent(), m.detailScroll, m.height)
 	}
 
+	if m.screen == screenMap {
+		return applyScrollWithIndicators(renderMapView(m), m.detailScroll, m.height)
+	}
+
 	if m.screen == screenRegion {
 		return renderRegionScreenWithErr(m.regions, m.regionCursor, m.width, m.regionErr, m.regionConfirmDiscard)
 	}
@@ -357,6 +361,8 @@ func (m Model) detailMaxScroll() int {
 	var content string
 	if m.screen == screenConnectivity && m.connectivityResult != nil {
 		content = renderConnectivityResult(m)
+	} else if m.screen == screenMap {
+		content = renderMapView(m)
 	} else {
 		content = m.currentDetailContent()
 	}
