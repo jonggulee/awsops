@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
@@ -28,6 +29,7 @@ type ProfileClient struct {
 	EKS      *eks.Client
 	Route53  *route53.Client
 	ELBv2    *elbv2.Client
+	RDS      *rds.Client
 }
 
 func LoadProfiles() ([]string, error) {
@@ -78,5 +80,6 @@ func NewProfileClient(ctx context.Context, profile, region string) (*ProfileClie
 		EKS:     eks.NewFromConfig(cfg),
 		Route53: route53.NewFromConfig(cfg),
 		ELBv2:   elbv2.NewFromConfig(cfg),
+		RDS:     rds.NewFromConfig(cfg),
 	}, nil
 }

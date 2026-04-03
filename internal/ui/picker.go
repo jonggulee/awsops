@@ -24,6 +24,7 @@ var pickerResources = []resourceItem{
 	{"Subnets", "subnet", "VPC"},
 	{"Transit Gateways", "tgw", "VPC"},
 	{"Clusters", "eks", "EKS"},
+	{"DB Instances", "rds", "RDS"},
 	{"Certificates", "acm", "ACM"},
 	{"Records", "route53", "Route 53"},
 }
@@ -37,6 +38,7 @@ var viewBreadcrumb = map[viewType]string{
 	viewSubnet:  "VPC  ›  Subnets",
 	viewTGW:     "VPC  ›  Transit Gateways",
 	viewEKS:     "EKS  ›  Clusters",
+	viewRDS:     "RDS  ›  DB Instances",
 	viewACM:     "ACM  ›  Certificates",
 	viewRoute53: "Route 53  ›  Records",
 	viewALB:     "EC2  ›  Load Balancers",
@@ -99,6 +101,10 @@ func collectTagKeys(m Model) []string {
 		for _, lb := range m.loadBalancers {
 			addKeys(lb.Tags)
 		}
+	case viewRDS:
+		for _, db := range m.rdsInstances {
+			addKeys(db.Tags)
+		}
 	}
 	keys := make([]string, 0, len(seen))
 	for k := range seen {
@@ -136,6 +142,10 @@ func collectTagValues(m Model, key string) []string {
 	case viewALB:
 		for _, lb := range m.loadBalancers {
 			addVal(lb.Tags)
+		}
+	case viewRDS:
+		for _, db := range m.rdsInstances {
+			addVal(db.Tags)
 		}
 	}
 	vals := make([]string, 0, len(seen))

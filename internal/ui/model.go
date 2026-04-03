@@ -79,6 +79,11 @@ type albLoadedMsg struct {
 	errs []error
 }
 
+type rdsLoadedMsg struct {
+	instances []awsclient.DBInstance
+	errs      []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -102,6 +107,7 @@ const (
 	viewEKS
 	viewRoute53
 	viewALB
+	viewRDS
 )
 
 type screen int
@@ -125,6 +131,7 @@ var viewNames = map[viewType]string{
 	viewEKS:     "eks",
 	viewRoute53: "route53",
 	viewALB:     "elb",
+	viewRDS:     "rds",
 }
 
 // --- sort ---
@@ -164,6 +171,9 @@ const (
 	sortZoneType
 	sortLBType
 	sortScheme
+	sortEngine
+	sortDBClass
+	sortCreateTime
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -189,6 +199,9 @@ var eniSortCols = []sortCol{sortProfile, sortENIID, sortName, sortState, sortInt
 
 // EKS:    1=Profile 2=Name 3=Status 4=Version 5=VpcID 6=- 7=Region
 var eksSortCols = []sortCol{sortProfile, sortName, sortState, sortVersion, sortVpcID, sortNone, sortRegion}
+
+// RDS:    1=Profile 2=Identifier 3=Engine 4=Class 5=Status 6=VpcID 7=Endpoint 8=Region
+var rdsSortCols = []sortCol{sortProfile, sortName, sortEngine, sortDBClass, sortState, sortVpcID, sortNone, sortRegion}
 
 var sortColNames = map[sortCol]string{
 	sortVersion: "Version",
@@ -226,6 +239,7 @@ type detailSnapshot struct {
 	selectedEKS     *awsclient.EKSCluster
 	selectedRoute53 *awsclient.Route53Record
 	selectedALB     *awsclient.LoadBalancer
+	selectedRDS     *awsclient.DBInstance
 	detailScroll    int
 	detailCursor    int
 }
@@ -302,6 +316,9 @@ type Model struct {
 	loadBalancers         []awsclient.LoadBalancer
 	displayedALBs         []awsclient.LoadBalancer
 	selectedALB           *awsclient.LoadBalancer
+	rdsInstances          []awsclient.DBInstance
+	displayedRDS          []awsclient.DBInstance
+	selectedRDS           *awsclient.DBInstance
 }
 
 func New() Model {
@@ -338,6 +355,7 @@ func (m Model) Init() tea.Cmd {
 		fetchEKSWithRegions(regions),
 		fetchRoute53(),
 		fetchALBWithRegions(regions),
+		fetchRDSWithRegions(regions),
 	)
 }
 
@@ -420,6 +438,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case albLoadedMsg:
 		m.loadBalancers = msg.lbs
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case rdsLoadedMsg:
+		m.rdsInstances = msg.instances
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
@@ -510,8 +535,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.eksClusters = nil
 				m.route53Records = nil
 				m.loadBalancers = nil
+				m.rdsInstances = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids), fetchRDSWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -791,6 +817,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedEKS = prev.selectedEKS
 					m.selectedRoute53 = prev.selectedRoute53
 					m.selectedALB = prev.selectedALB
+					m.selectedRDS = prev.selectedRDS
 					m.detailScroll = prev.detailScroll
 					m.detailCursor = prev.detailCursor
 				} else {
@@ -802,6 +829,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedEKS = nil
 					m.selectedRoute53 = nil
 					m.selectedALB = nil
+					m.selectedRDS = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -935,7 +963,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case viewALB:
 					if lb := m.selectedALB_(); lb != nil {
 						m.selectedALB = lb
-						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53 = nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53, m.selectedRDS = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
+				case viewRDS:
+					if db := m.selectedRDS_(); db != nil {
+						m.selectedRDS = db
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53, m.selectedALB = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 						m.screen = screenDetail
 						m.detailScroll = 0
 						m.detailCursor = -1
@@ -1433,6 +1470,8 @@ func (m *Model) sortByIndex(n int) {
 		cols = eniSortCols
 	case viewEKS:
 		cols = eksSortCols
+	case viewRDS:
+		cols = rdsSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return

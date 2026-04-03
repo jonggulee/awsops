@@ -209,6 +209,94 @@ func (m *Model) sortedCerts() []awsclient.Certificate {
 
 // --- view command & table dispatch ---
 
+// --- RDS table ---
+
+// RDS: 1=Profile 2=Identifier 3=Engine 4=Class 5=Status 6=VpcID 7=Endpoint 8=Region
+func buildRDSTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile",    profileWidth),
+		h(2, sortName,    "Identifier", 28),
+		h(3, sortEngine,  "Engine",     20),
+		h(4, sortDBClass, "Class",      16),
+		h(5, sortState,   "Status",     14),
+		h(6, sortVpcID,   "VPC ID",     22),
+		h(7, sortNone,    "Endpoint",   48),
+		h(8, sortRegion,  "Region",     18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterRDSData(dbs []awsclient.DBInstance, filters []string) []awsclient.DBInstance {
+	if len(filters) == 0 {
+		return dbs
+	}
+	var out []awsclient.DBInstance
+	for _, db := range dbs {
+		if matchAllWithTags(filters, db.Tags, db.Profile, db.DBInstanceID, db.Engine, db.EngineVersion, db.DBInstanceClass, db.Status, db.VpcID, db.Endpoint, db.Region) {
+			out = append(out, db)
+		}
+	}
+	return out
+}
+
+func rdsRows(dbs []awsclient.DBInstance) []table.Row {
+	rows := make([]table.Row, len(dbs))
+	for i, db := range dbs {
+		engineVer := db.Engine + " " + db.EngineVersion
+		rows[i] = table.Row{db.Profile, db.DBInstanceID, engineVer, db.DBInstanceClass, db.Status, db.VpcID, db.Endpoint, db.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedRDS() []awsclient.DBInstance {
+	dbs := make([]awsclient.DBInstance, len(m.rdsInstances))
+	copy(dbs, m.rdsInstances)
+	if m.sortBy == sortNone {
+		return dbs
+	}
+	sort.Slice(dbs, func(i, j int) bool {
+		a, b := dbs[i], dbs[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.DBInstanceID < b.DBInstanceID
+		case sortEngine:
+			less = a.Engine < b.Engine
+		case sortDBClass:
+			less = a.DBInstanceClass < b.DBInstanceClass
+		case sortState:
+			less = a.Status < b.Status
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return dbs
+}
+
+func (m *Model) selectedRDS_() *awsclient.DBInstance {
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(m.displayedRDS) {
+		return nil
+	}
+	db := m.displayedRDS[cursor]
+	return &db
+}
+
 func (m *Model) applyCommand(cmd string) {
 	switch strings.TrimSpace(strings.ToLower(cmd)) {
 	case "ec2":
@@ -231,6 +319,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewRoute53
 	case "elb":
 		m.view = viewALB
+	case "rds":
+		m.view = viewRDS
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -268,6 +358,9 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewALB:
 		m.displayedALBs = filterALBData(m.sortedALBs(), m.filters)
 		return buildALBTable(rowsSliced(albRows(m.displayedALBs), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewRDS:
+		m.displayedRDS = filterRDSData(m.sortedRDS(), m.filters)
+		return buildRDSTable(rowsSliced(rdsRows(m.displayedRDS), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -313,6 +406,8 @@ func (m *Model) maxColOffset() int {
 		return 6
 	case viewALB:
 		return 6
+	case viewRDS:
+		return 7
 	}
 	return 0
 }

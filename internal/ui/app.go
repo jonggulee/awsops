@@ -116,6 +116,13 @@ func fetchALBWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchRDSWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		instances, errs := awsclient.FetchAllDBInstances(context.Background(), regions)
+		return rdsLoadedMsg{instances: instances, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

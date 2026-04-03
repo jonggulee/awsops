@@ -259,6 +259,8 @@ func (m Model) currentDetailContent() string {
 		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap())
 	case m.selectedEKS != nil:
 		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
+	case m.selectedRDS != nil:
+		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSGNameMap())
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {

@@ -893,6 +893,85 @@ func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLi
 	return b.String()
 }
 
+func renderRDSDetail(db *awsclient.DBInstance, vpcName string, sgNames map[string]string) string {
+	if db == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("RDS  ›  %s", db.DBInstanceID)) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile",     db.Profile))
+	b.WriteString(row("Identifier",  db.DBInstanceID))
+	if db.Name != "" {
+		b.WriteString(row("Name", db.Name))
+	}
+	b.WriteString(row("Status",      coloredRDSStatus(db.Status)))
+	b.WriteString(row("Engine",      db.Engine+" "+db.EngineVersion))
+	b.WriteString(row("Class",       db.DBInstanceClass))
+	b.WriteString(row("Multi-AZ",    fmt.Sprintf("%v", db.MultiAZ)))
+	b.WriteString(row("Region",      db.Region))
+	b.WriteString(row("Created",     db.CreateTimeStr()))
+
+	b.WriteString(sectionStyle.Render("Storage") + "\n")
+	b.WriteString(row("Storage Type",      db.StorageType))
+	b.WriteString(row("Allocated Storage", fmt.Sprintf("%d GiB", db.AllocatedStorage)))
+
+	b.WriteString(sectionStyle.Render("Network") + "\n")
+	b.WriteString(row("VPC ID",          withName(db.VpcID, vpcName)))
+	b.WriteString(row("Subnet Group",    orDash(db.SubnetGroupName)))
+	b.WriteString(row("Availability Zone", orDash(db.AvailabilityZone)))
+	endpoint := orDash(db.Endpoint)
+	if db.Endpoint != "" && db.Port > 0 {
+		endpoint = fmt.Sprintf("%s:%d", db.Endpoint, db.Port)
+	}
+	b.WriteString(row("Endpoint", endpoint))
+
+	if len(db.SubnetIDs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Subnets (%d)", len(db.SubnetIDs))) + "\n")
+		for _, sid := range db.SubnetIDs {
+			b.WriteString("  " + valueStyle.Render(sid) + "\n")
+		}
+	}
+
+	if len(db.SecurityGroupIDs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(db.SecurityGroupIDs))) + "\n")
+		for _, sgID := range db.SecurityGroupIDs {
+			name := sgNames[sgID]
+			b.WriteString("  " + valueStyle.Render(withName(sgID, name)) + "\n")
+		}
+	}
+
+	if len(db.Tags) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Tags (%d)", len(db.Tags))) + "\n")
+		keys := make([]string, 0, len(db.Tags))
+		for k := range db.Tags {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			b.WriteString(row(k, tagStyle.Render(db.Tags[k])))
+		}
+	}
+
+	b.WriteString("\n" + helpStyle.Render("esc / q  back to list    j/k  scroll"))
+	return b.String()
+}
+
+func coloredRDSStatus(status string) string {
+	switch status {
+	case "available":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(status)
+	case "stopped":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(status)
+	case "starting", "stopping", "rebooting", "modifying", "upgrading", "creating", "backing-up":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(status)
+	default:
+		return status
+	}
+}
+
 func coloredEKSStatus(status string) string {
 	switch status {
 	case "ACTIVE":
