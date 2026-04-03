@@ -77,7 +77,7 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenDetail {
-		return applyScroll(m.currentDetailContent(), m.detailScroll, m.height)
+		return applyScrollWithIndicators(m.currentDetailContent(), m.detailScroll, m.height)
 	}
 
 	if m.screen == screenRegion {
@@ -85,7 +85,16 @@ func (m Model) View() string {
 	}
 
 	if m.screen == screenConnectivity {
-		return applyScroll(renderConnectivityScreen(m), m.detailScroll, m.height)
+		return applyScrollWithIndicators(renderConnectivityScreen(m), m.detailScroll, m.height)
+	}
+
+	if m.screen == screenTagPicker {
+		var sections []string
+		sections = append(sections, m.renderHeaderBar())
+		sections = append(sections, m.renderCrumbBar())
+		sections = append(sections, renderTagPicker(m))
+		sections = append(sections, m.renderHintBar())
+		return strings.Join(sections, "\n")
 	}
 
 	var sections []string
@@ -109,6 +118,7 @@ func (m Model) View() string {
 	}
 
 	sections = append(sections, m.table.View())
+	sections = append(sections, m.renderScrollIndicator())
 	sections = append(sections, m.renderHintBar())
 
 	return strings.Join(sections, "\n")
@@ -179,13 +189,37 @@ func (m Model) renderInputLine() string {
 	if len(m.filters) > 0 {
 		prefix = "[" + strings.Join(m.filters, " & ") + "] & "
 	}
-	return inputStyle.Render("/ " + prefix + m.input.View())
+	tagHint := helpStyle.Render("  (key=value for tag search)")
+	return inputStyle.Render("/ "+prefix+m.input.View()) + tagHint
+}
+
+func (m Model) renderScrollIndicator() string {
+	total := len(m.table.Rows())
+	if total == 0 {
+		return ""
+	}
+	cursor := m.table.Cursor()
+	above := cursor
+	below := total - cursor - 1
+
+	var parts []string
+	if above > 0 {
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("▲ %d more", above)))
+	}
+	if below > 0 {
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("▼ %d more", below)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, helpStyle.Render("    "))
 }
 
 func (m Model) renderHintBar() string {
 	var hints []string
 	hints = []string{
 		hintItem("/", "Search"),
+		hintItem("t", "Tags"),
 		hintItem(":", "View"),
 		hintItem("d", "Describe"),
 		hintItem("1-0", "Sort"),
@@ -216,6 +250,11 @@ func (m Model) currentDetailContent() string {
 		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
 	case m.selectedCert != nil:
 		return renderCertDetail(m.selectedCert)
+	case m.selectedRoute53 != nil:
+		aliasLinked := m.selectedRoute53.AliasTarget != "" && m.lookupALBByDNS(m.selectedRoute53.AliasTarget) != nil
+		return renderRoute53Detail(m.selectedRoute53, m.detailCursor, aliasLinked)
+	case m.selectedALB != nil:
+		return renderALBDetail(m.selectedALB, m.lookupVPCName(m.selectedALB.VpcID), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0)
 	case m.selectedENI != nil:
 		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap())
 	case m.selectedEKS != nil:
@@ -289,22 +328,40 @@ func (m Model) detailMaxScroll() int {
 	return max
 }
 
-// applyScroll slices a multi-line string to fit within the terminal height,
-// starting from the given scroll offset. Prevents scrolling past the last line.
-func applyScroll(content string, scroll, height int) string {
+
+// applyScrollWithIndicators는 applyScroll과 동일하게 스크롤하되,
+// 위/아래에 숨겨진 줄이 있으면 첫/마지막 줄을 ▲▼ N more 인디케이터로 교체한다.
+func applyScrollWithIndicators(content string, scroll, height int) string {
 	lines := strings.Split(content, "\n")
-	maxScroll := len(lines) - height
+	total := len(lines)
+
+	maxScroll := total - height
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
 	if scroll > maxScroll {
 		scroll = maxScroll
 	}
+
 	end := scroll + height
-	if end > len(lines) {
-		end = len(lines)
+	if end > total {
+		end = total
 	}
-	return strings.Join(lines[scroll:end], "\n")
+
+	visible := make([]string, end-scroll)
+	copy(visible, lines[scroll:end])
+
+	above := scroll
+	below := total - end
+
+	if below > 0 && len(visible) > 0 {
+		visible[len(visible)-1] = helpStyle.Render(fmt.Sprintf("  ▼ %d more", below))
+	}
+	if above > 0 && len(visible) > 0 {
+		visible[0] = helpStyle.Render(fmt.Sprintf("  ▲ %d more", above))
+	}
+
+	return strings.Join(visible, "\n")
 }
 
 func hintItem(key, action string) string {

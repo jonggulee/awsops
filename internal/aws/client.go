@@ -12,18 +12,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 const DefaultRegion = "ap-northeast-2"
 
 type ProfileClient struct {
-	Profile string
-	Region  string
-	EC2     *ec2.Client
-	STS     *sts.Client
-	ACM     *acm.Client
-	EKS     *eks.Client
+	Profile  string
+	Region   string
+	EC2      *ec2.Client
+	STS      *sts.Client
+	ACM      *acm.Client
+	EKS      *eks.Client
+	Route53  *route53.Client
+	ELBv2    *elbv2.Client
 }
 
 func LoadProfiles() ([]string, error) {
@@ -72,5 +76,7 @@ func NewProfileClient(ctx context.Context, profile, region string) (*ProfileClie
 		STS:     sts.NewFromConfig(cfg),
 		ACM:     acm.NewFromConfig(cfg),
 		EKS:     eks.NewFromConfig(cfg),
+		Route53: route53.NewFromConfig(cfg),
+		ELBv2:   elbv2.NewFromConfig(cfg),
 	}, nil
 }

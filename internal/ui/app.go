@@ -102,6 +102,20 @@ func fetchEKSWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchRoute53() tea.Cmd {
+	return func() tea.Msg {
+		records, errs := awsclient.FetchAllRoute53Records(context.Background())
+		return route53LoadedMsg{records: records, errs: errs}
+	}
+}
+
+func fetchALBWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		lbs, errs := awsclient.FetchAllLoadBalancers(context.Background(), regions)
+		return albLoadedMsg{lbs: lbs, errs: errs}
+	}
+}
+
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
 	_, err := p.Run()

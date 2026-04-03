@@ -69,6 +69,16 @@ type eksLoadedMsg struct {
 	errs     []error
 }
 
+type route53LoadedMsg struct {
+	records []awsclient.Route53Record
+	errs    []error
+}
+
+type albLoadedMsg struct {
+	lbs  []awsclient.LoadBalancer
+	errs []error
+}
+
 // --- modes & views ---
 
 type inputMode int
@@ -90,6 +100,8 @@ const (
 	viewACM
 	viewENI
 	viewEKS
+	viewRoute53
+	viewALB
 )
 
 type screen int
@@ -99,17 +111,20 @@ const (
 	screenDetail              // d 눌렀을 때 상세 화면
 	screenRegion              // R 눌렀을 때 리전 선택 화면
 	screenConnectivity        // c 눌렀을 때 연결 체크 화면
+	screenTagPicker           // :tag 명령어로 진입하는 태그 피커
 )
 
 var viewNames = map[viewType]string{
-	viewEC2:    "ec2",
-	viewSG:     "sg",
-	viewVPC:    "vpc",
-	viewSubnet: "subnet",
-	viewTGW:    "tgw",
-	viewACM:    "acm",
-	viewENI:    "eni",
-	viewEKS:    "eks",
+	viewEC2:     "ec2",
+	viewSG:      "sg",
+	viewVPC:     "vpc",
+	viewSubnet:  "subnet",
+	viewTGW:     "tgw",
+	viewACM:     "acm",
+	viewENI:     "eni",
+	viewEKS:     "eks",
+	viewRoute53: "route53",
+	viewALB:     "elb",
 }
 
 // --- sort ---
@@ -143,6 +158,12 @@ const (
 	sortDescription
 	sortInterfaceType
 	sortVersion
+	sortZoneName
+	sortRecordType
+	sortTTL
+	sortZoneType
+	sortLBType
+	sortScheme
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -198,13 +219,15 @@ var sortColNames = map[sortCol]string{
 
 // detailSnapshot captures the state of a detail view for back-navigation.
 type detailSnapshot struct {
-	selectedInst   *awsclient.Instance
-	selectedSG     *awsclient.SecurityGroup
-	selectedVPC    *awsclient.VPC
-	selectedSubnet *awsclient.Subnet
-	selectedEKS    *awsclient.EKSCluster
-	detailScroll   int
-	detailCursor   int
+	selectedInst    *awsclient.Instance
+	selectedSG      *awsclient.SecurityGroup
+	selectedVPC     *awsclient.VPC
+	selectedSubnet  *awsclient.Subnet
+	selectedEKS     *awsclient.EKSCluster
+	selectedRoute53 *awsclient.Route53Record
+	selectedALB     *awsclient.LoadBalancer
+	detailScroll    int
+	detailCursor    int
 }
 
 // --- model ---
@@ -247,6 +270,9 @@ type Model struct {
 	height         int
 	regions        []regionEntry
 	commandCursor        int           // 리소스 피커 커서 위치
+	tagPickerStep        int           // 0 = key 선택, 1 = value 선택
+	tagPickerKey         string        // step 1에서 선택된 태그 키
+	tagPickerCursor      int           // 태그 피커 커서
 	regionsPrev          []regionEntry // 리전 화면 진입 시 스냅샷 (취소 복원용)
 	regionCursor         int
 	regionErr            bool // 선택 없이 enter 시 경고 표시
@@ -270,6 +296,12 @@ type Model struct {
 	displayedEKS          []awsclient.EKSCluster
 	selectedEKS           *awsclient.EKSCluster
 	instanceTypeSpecs     map[string]awsclient.InstanceTypeSpec
+	route53Records        []awsclient.Route53Record
+	displayedRoute53      []awsclient.Route53Record
+	selectedRoute53       *awsclient.Route53Record
+	loadBalancers         []awsclient.LoadBalancer
+	displayedALBs         []awsclient.LoadBalancer
+	selectedALB           *awsclient.LoadBalancer
 }
 
 func New() Model {
@@ -304,6 +336,8 @@ func (m Model) Init() tea.Cmd {
 		fetchENIsWithRegions(regions),
 		fetchCertificatesWithRegions(regions),
 		fetchEKSWithRegions(regions),
+		fetchRoute53(),
+		fetchALBWithRegions(regions),
 	)
 }
 
@@ -372,6 +406,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case eksLoadedMsg:
 		m.eksClusters = msg.clusters
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case route53LoadedMsg:
+		m.route53Records = msg.records
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case albLoadedMsg:
+		m.loadBalancers = msg.lbs
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
@@ -460,8 +508,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.enis = nil
 				m.certs = nil
 				m.eksClusters = nil
+				m.route53Records = nil
+				m.loadBalancers = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -630,6 +680,93 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// 태그 피커 화면
+		if m.screen == screenTagPicker {
+			query := strings.ToLower(m.input.Value())
+
+			// 현재 단계에 맞는 항목 목록 계산
+			var items []string
+			if m.tagPickerStep == 0 {
+				for _, k := range collectTagKeys(m) {
+					if query == "" || strings.Contains(strings.ToLower(k), query) {
+						items = append(items, k)
+					}
+				}
+			} else {
+				items = append(items, "(any)") // key= 형식으로 해당 태그 존재 여부만 필터
+				for _, v := range collectTagValues(m, m.tagPickerKey) {
+					if query == "" || strings.Contains(strings.ToLower(v), query) {
+						items = append(items, v)
+					}
+				}
+			}
+
+			// 커서 클램핑
+			if len(items) == 0 {
+				m.tagPickerCursor = 0
+			} else if m.tagPickerCursor >= len(items) {
+				m.tagPickerCursor = len(items) - 1
+			}
+
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				if m.tagPickerStep == 1 {
+					m.tagPickerStep = 0
+					m.tagPickerCursor = 0
+					m.input.SetValue("")
+				} else {
+					m.screen = screenTable
+					m.input.Blur()
+					m.input.SetValue("")
+				}
+			case "up", "k":
+				if m.tagPickerCursor > 0 {
+					m.tagPickerCursor--
+				}
+			case "down", "j":
+				if m.tagPickerCursor < len(items)-1 {
+					m.tagPickerCursor++
+				}
+			case "enter":
+				if len(items) > 0 && m.tagPickerCursor < len(items) {
+					if m.tagPickerStep == 0 {
+						// key 선택 → value 선택 단계로
+						m.tagPickerKey = items[m.tagPickerCursor]
+						m.tagPickerStep = 1
+						m.tagPickerCursor = 0
+						m.input.SetValue("")
+					} else {
+						// value 선택 → 필터 적용 후 테이블로 복귀
+						var filter string
+						if items[m.tagPickerCursor] == "(any)" {
+							filter = m.tagPickerKey + "="
+						} else {
+							filter = m.tagPickerKey + "=" + items[m.tagPickerCursor]
+						}
+						m.filters = append(m.filters, filter)
+						m.screen = screenTable
+						m.input.Blur()
+						m.input.SetValue("")
+						m.tagPickerStep = 0
+						m.tagPickerKey = ""
+						m.tagPickerCursor = 0
+						m.table = m.buildCurrentTable()
+					}
+				}
+			default:
+				prev := m.input.Value()
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(msg)
+				if m.input.Value() != prev {
+					m.tagPickerCursor = 0
+				}
+				return m, cmd
+			}
+			return m, nil
+		}
+
 		// 디테일 화면: ↑/↓ = 필드 이동, j/k = 스크롤, enter = 이동
 		if m.screen == screenDetail {
 			pageSize := m.height / 2
@@ -652,6 +789,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedVPC = prev.selectedVPC
 					m.selectedSubnet = prev.selectedSubnet
 					m.selectedEKS = prev.selectedEKS
+					m.selectedRoute53 = prev.selectedRoute53
+					m.selectedALB = prev.selectedALB
 					m.detailScroll = prev.detailScroll
 					m.detailCursor = prev.detailCursor
 				} else {
@@ -661,6 +800,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedCert = nil
 					m.selectedENI = nil
 					m.selectedEKS = nil
+					m.selectedRoute53 = nil
+					m.selectedALB = nil
 					m.detailScroll = 0
 				}
 			case "up":
@@ -782,6 +923,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = -1
 						m.detailHistory = nil
 					}
+				case viewRoute53:
+					if rec := m.selectedRoute53_(); rec != nil {
+						m.selectedRoute53 = rec
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedALB = nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
+				case viewALB:
+					if lb := m.selectedALB_(); lb != nil {
+						m.selectedALB = lb
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53 = nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
 				}
 				return m, nil
 			case "c":
@@ -825,8 +984,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.enis = nil
 				m.certs = nil
 				m.eksClusters = nil
+				m.route53Records = nil
+				m.loadBalancers = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids))
 			case "R":
 				// 취소 시 복원할 수 있도록 현재 상태 저장
 				prev := make([]regionEntry, len(m.regions))
@@ -835,6 +996,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = screenRegion
 				m.regionCursor = 0
 				return m, nil
+			case "t":
+				m.screen = screenTagPicker
+				m.tagPickerStep = 0
+				m.tagPickerKey = ""
+				m.tagPickerCursor = 0
+				m.input.Placeholder = "filter..."
+				m.input.SetValue("")
+				m.input.Focus()
+				return m, textinput.Blink
 			case "/":
 				m.mode = modeSearch
 				m.input.Placeholder = "type to search..."
@@ -957,7 +1127,27 @@ func (m *Model) detailInteractiveFieldCount() int {
 	if m.selectedEKS != nil {
 		return len(m.selectedEKS.Nodes) + len(m.selectedEKS.SubnetIDs) + len(m.selectedEKS.SecurityGroupIDs)
 	}
+	if m.selectedRoute53 != nil && m.selectedRoute53.AliasTarget != "" {
+		// alias target이 로드된 ALB와 매칭될 때만 커서 활성화
+		if m.lookupALBByDNS(m.selectedRoute53.AliasTarget) != nil {
+			return 1
+		}
+	}
+	if m.selectedALB != nil {
+		return len(m.selectedALB.SecurityGroupIDs)
+	}
 	return 0
+}
+
+// lookupALBByDNS returns a pointer to the LoadBalancer whose DNSName matches the given target.
+func (m *Model) lookupALBByDNS(dnsName string) *awsclient.LoadBalancer {
+	norm := strings.ToLower(strings.TrimSuffix(dnsName, "."))
+	for i := range m.loadBalancers {
+		if m.loadBalancers[i].DNSNameNorm() == norm {
+			return &m.loadBalancers[i]
+		}
+	}
+	return nil
 }
 
 // navigateFromDetail navigates to the resource pointed to by the current detailCursor.
@@ -1015,6 +1205,42 @@ func (m *Model) navigateFromDetail() {
 						return
 					}
 				}
+			}
+		}
+		return
+	}
+
+	// Route53 alias → ALB 상세 진입
+	if m.selectedRoute53 != nil && m.detailCursor == 0 {
+		if lb := m.lookupALBByDNS(m.selectedRoute53.AliasTarget); lb != nil {
+			m.detailHistory = append(m.detailHistory, detailSnapshot{
+				selectedRoute53: m.selectedRoute53,
+				detailScroll:    m.detailScroll,
+				detailCursor:    m.detailCursor,
+			})
+			m.selectedALB = lb
+			m.selectedRoute53 = nil
+			m.detailScroll = 0
+			m.detailCursor = -1
+		}
+		return
+	}
+
+	// ALB SG → SG 상세 진입
+	if m.selectedALB != nil && m.detailCursor >= 0 && m.detailCursor < len(m.selectedALB.SecurityGroupIDs) {
+		sgID := m.selectedALB.SecurityGroupIDs[m.detailCursor]
+		for i := range m.groups {
+			if m.groups[i].GroupID == sgID {
+				m.detailHistory = append(m.detailHistory, detailSnapshot{
+					selectedALB:  m.selectedALB,
+					detailScroll: m.detailScroll,
+					detailCursor: m.detailCursor,
+				})
+				m.selectedSG = &m.groups[i]
+				m.selectedALB = nil
+				m.detailScroll = 0
+				m.detailCursor = -1
+				return
 			}
 		}
 		return

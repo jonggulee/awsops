@@ -766,6 +766,121 @@ func renderNodegroupBlock(ng awsclient.EKSNodegroup) string {
 	return b.String()
 }
 
+func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, detailCursor int, hasHistory bool) string {
+	if lb == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("%s  ›  %s", lb.TypeShort(), lb.Name)) + "\n")
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", lb.Profile))
+	b.WriteString(row("Name",    lb.Name))
+	b.WriteString(row("Type",    lb.TypeShort()))
+	b.WriteString(row("Scheme",  lb.Scheme))
+	b.WriteString(row("State",   coloredALBState(lb.State)))
+	b.WriteString(row("Region",  lb.Region))
+	b.WriteString(row("ARN",     lb.ARN))
+
+	b.WriteString(sectionStyle.Render("Network") + "\n")
+	b.WriteString(row("VPC ID",   withName(lb.VpcID, vpcName)))
+	b.WriteString(row("DNS Name", lb.DNSName))
+
+	if len(lb.AvailabilityZones) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Availability Zones (%d)", len(lb.AvailabilityZones))) + "\n")
+		for _, az := range lb.AvailabilityZones {
+			b.WriteString("  " + valueStyle.Render(az) + "\n")
+		}
+	}
+
+	if len(lb.SecurityGroupIDs) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(lb.SecurityGroupIDs))) + "\n")
+		for i, sgID := range lb.SecurityGroupIDs {
+			label := fmt.Sprintf("SG %d", i+1)
+			b.WriteString(rowMaybeActive(label, withName(sgID, sgNames[sgID]), detailCursor == i))
+		}
+	}
+
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = "esc  deselect    enter  open SG    ↑/↓  navigate    j/k  scroll"
+	case hasHistory:
+		hint = "esc  back ◀    ↑/↓  select SG    j/k  scroll"
+	default:
+		hint = "esc / q  back to list    ↑/↓  select SG    j/k  scroll"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
+func coloredALBState(state string) string {
+	switch state {
+	case "active":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(state)
+	case "failed":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(state)
+	case "provisioning":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(state)
+	default:
+		return state
+	}
+}
+
+func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLinked bool) string {
+	if rec == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	title := rec.Name
+	if title == "" {
+		title = rec.ZoneName
+	}
+	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Route 53  ›  %s  ›  %s", rec.ZoneName, title)) + "\n")
+
+	b.WriteString(sectionStyle.Render("Record") + "\n")
+	b.WriteString(row("Profile",   rec.Profile))
+	b.WriteString(row("Name",      rec.Name))
+	b.WriteString(row("Type",      rec.Type))
+	b.WriteString(row("TTL",       rec.TTLStr()))
+	b.WriteString(row("Zone",      rec.ZoneName))
+	b.WriteString(row("Zone Type", rec.ZoneType))
+	b.WriteString(row("Zone ID",   rec.ZoneID))
+
+	if rec.AliasTarget != "" {
+		b.WriteString(sectionStyle.Render("Alias Target") + "\n")
+		if aliasLinked {
+			// ALB와 매칭됨 → 커서로 선택해서 Enter로 진입 가능
+			b.WriteString(rowMaybeActive("DNS Name", valueStyle.Render(rec.AliasTarget)+"  "+nameTagStyle.Render("[→ ALB]"), detailCursor == 0))
+		} else {
+			b.WriteString(row("DNS Name", rec.AliasTarget))
+		}
+	} else {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Values (%d)", len(rec.Values))) + "\n")
+		if len(rec.Values) == 0 {
+			b.WriteString("  " + tagStyle.Render("-") + "\n")
+		} else {
+			for _, v := range rec.Values {
+				b.WriteString("  " + valueStyle.Render(v) + "\n")
+			}
+		}
+	}
+
+	var hint string
+	switch {
+	case aliasLinked && detailCursor >= 0:
+		hint = "esc  deselect    enter  open ALB    ↑/↓  select    j/k  scroll"
+	case aliasLinked:
+		hint = "esc / q  back    ↑/↓  select alias    j/k  scroll"
+	default:
+		hint = "esc / q  back to list"
+	}
+	b.WriteString("\n" + helpStyle.Render(hint))
+	return b.String()
+}
+
 func coloredEKSStatus(status string) string {
 	switch status {
 	case "ACTIVE":

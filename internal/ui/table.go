@@ -227,6 +227,10 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewENI
 	case "eks":
 		m.view = viewEKS
+	case "route53":
+		m.view = viewRoute53
+	case "elb":
+		m.view = viewALB
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -258,6 +262,12 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewEKS:
 		m.displayedEKS = filterEKSData(m.sortedEKSClusters(), m.filters)
 		return buildEKSTable(rowsSliced(eksRows(m.displayedEKS), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewRoute53:
+		m.displayedRoute53 = filterRoute53Data(m.sortedRoute53(), m.filters)
+		return buildRoute53Table(rowsSliced(route53Rows(m.displayedRoute53), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewALB:
+		m.displayedALBs = filterALBData(m.sortedALBs(), m.filters)
+		return buildALBTable(rowsSliced(albRows(m.displayedALBs), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -298,6 +308,10 @@ func (m *Model) maxColOffset() int {
 	case viewENI:
 		return 9
 	case viewEKS:
+		return 6
+	case viewRoute53:
+		return 6
+	case viewALB:
 		return 6
 	}
 	return 0
@@ -354,7 +368,7 @@ func filterEC2Data(instances []awsclient.Instance, filters []string) []awsclient
 	}
 	var out []awsclient.Instance
 	for _, inst := range instances {
-		if matchAll(filters, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.VpcID, inst.SubnetID) {
+		if matchAllWithTags(filters, inst.Tags, inst.Profile, inst.Region, inst.Name, inst.InstanceID, inst.State, inst.Type, inst.PrivateIP, inst.VpcID, inst.SubnetID) {
 			out = append(out, inst)
 		}
 	}
@@ -450,7 +464,7 @@ func filterVPCData(vpcs []awsclient.VPC, filters []string) []awsclient.VPC {
 	}
 	var out []awsclient.VPC
 	for _, v := range vpcs {
-		if matchAll(filters, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.State, v.Region) {
+		if matchAllWithTags(filters, v.Tags, v.Profile, v.Name, v.VpcID, v.CidrBlock, v.State, v.Region) {
 			out = append(out, v)
 		}
 	}
@@ -500,7 +514,7 @@ func filterSubnetData(subnets []awsclient.Subnet, filters []string) []awsclient.
 	}
 	var out []awsclient.Subnet
 	for _, s := range subnets {
-		if matchAll(filters, s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region) {
+		if matchAllWithTags(filters, s.Tags, s.Profile, s.Name, s.SubnetID, s.VpcID, s.CidrBlock, s.AvailabilityZone, s.Region) {
 			out = append(out, s)
 		}
 	}
@@ -526,6 +540,60 @@ func matchAll(filters []string, fields ...string) bool {
 				break
 			}
 		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// parseTagFilter splits "key=value" into (key, value, true).
+// Returns ("", "", false) if f does not contain "=".
+func parseTagFilter(f string) (key, value string, ok bool) {
+	idx := strings.Index(f, "=")
+	if idx < 0 {
+		return "", "", false
+	}
+	return f[:idx], f[idx+1:], true
+}
+
+// matchAllWithTags is like matchAll but also searches tags.
+// Tokens in "key=value" format are matched against tag keys/values only.
+// Plain text tokens are matched against both fields and tag keys/values.
+func matchAllWithTags(filters []string, tags map[string]string, fields ...string) bool {
+	for _, f := range filters {
+		q := strings.ToLower(f)
+		matched := false
+
+		if key, val, isTag := parseTagFilter(q); isTag {
+			// key=value 형식: 태그에서만 검색
+			for k, v := range tags {
+				if strings.Contains(strings.ToLower(k), key) &&
+					(val == "" || strings.Contains(strings.ToLower(v), val)) {
+					matched = true
+					break
+				}
+			}
+		} else {
+			// 일반 텍스트: 필드 먼저 검색
+			for _, field := range fields {
+				if strings.Contains(strings.ToLower(field), q) {
+					matched = true
+					break
+				}
+			}
+			// 필드에서 못 찾으면 태그 키/값에서도 검색
+			if !matched {
+				for k, v := range tags {
+					if strings.Contains(strings.ToLower(k), q) ||
+						strings.Contains(strings.ToLower(v), q) {
+						matched = true
+						break
+					}
+				}
+			}
+		}
+
 		if !matched {
 			return false
 		}
@@ -740,7 +808,7 @@ func filterEKSData(clusters []awsclient.EKSCluster, filters []string) []awsclien
 	}
 	var out []awsclient.EKSCluster
 	for _, c := range clusters {
-		if matchAll(filters, c.Profile, c.Name, c.Status, c.Version, c.VpcID, c.Region) {
+		if matchAllWithTags(filters, c.Tags, c.Profile, c.Name, c.Status, c.Version, c.VpcID, c.Region) {
 			out = append(out, c)
 		}
 	}
@@ -825,4 +893,175 @@ func (m *Model) sortedENIs() []awsclient.ENI {
 		return !less
 	})
 	return enis
+}
+
+// --- Route53 table ---
+
+// Route53: 1=Profile 2=Zone 3=Name 4=Type 5=TTL 6=Value 7=ZoneType
+func buildRoute53Table(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile,    "Profile",   profileWidth),
+		h(2, sortZoneName,   "Zone",      28),
+		h(3, sortName,       "Name",      36),
+		h(4, sortRecordType, "Type",      8),
+		h(5, sortTTL,        "TTL",       8),
+		h(6, sortNone,       "Value",     40),
+		h(7, sortZoneType,   "Zone Type", 10),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterRoute53Data(records []awsclient.Route53Record, filters []string) []awsclient.Route53Record {
+	if len(filters) == 0 {
+		return records
+	}
+	var out []awsclient.Route53Record
+	for _, r := range records {
+		if matchAll(filters, r.Profile, r.ZoneName, r.Name, r.Type, r.ZoneType, r.FirstValue()) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func route53Rows(records []awsclient.Route53Record) []table.Row {
+	rows := make([]table.Row, len(records))
+	for i, r := range records {
+		rows[i] = table.Row{r.Profile, r.ZoneName, r.Name, r.Type, r.TTLStr(), r.FirstValue(), r.ZoneType}
+	}
+	return rows
+}
+
+func (m *Model) sortedRoute53() []awsclient.Route53Record {
+	records := make([]awsclient.Route53Record, len(m.route53Records))
+	copy(records, m.route53Records)
+	if m.sortBy == sortNone {
+		return records
+	}
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortZoneName:
+			less = a.ZoneName < b.ZoneName
+		case sortName:
+			less = a.Name < b.Name
+		case sortRecordType:
+			less = a.Type < b.Type
+		case sortTTL:
+			less = a.TTL < b.TTL
+		case sortZoneType:
+			less = a.ZoneType < b.ZoneType
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return records
+}
+
+func (m *Model) selectedRoute53_() *awsclient.Route53Record {
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(m.displayedRoute53) {
+		return nil
+	}
+	r := m.displayedRoute53[cursor]
+	return &r
+}
+
+// --- ALB table ---
+
+// ALB: 1=Profile 2=Name 3=Type 4=Scheme 5=State 6=VpcID 7=DNS Name 8=Region
+func buildALBTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile",  profileWidth),
+		h(2, sortName,    "Name",     28),
+		h(3, sortLBType,  "Type",     8),
+		h(4, sortScheme,  "Scheme",   16),
+		h(5, sortState,   "State",    12),
+		h(6, sortVpcID,   "VPC ID",   22),
+		h(7, sortNone,    "DNS Name", 52),
+		h(8, sortRegion,  "Region",   18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterALBData(lbs []awsclient.LoadBalancer, filters []string) []awsclient.LoadBalancer {
+	if len(filters) == 0 {
+		return lbs
+	}
+	var out []awsclient.LoadBalancer
+	for _, lb := range lbs {
+		if matchAll(filters, lb.Profile, lb.Name, lb.LBType, lb.TypeShort(), lb.Scheme, lb.State, lb.VpcID, lb.DNSName, lb.Region) {
+			out = append(out, lb)
+		}
+	}
+	return out
+}
+
+func albRows(lbs []awsclient.LoadBalancer) []table.Row {
+	rows := make([]table.Row, len(lbs))
+	for i, lb := range lbs {
+		rows[i] = table.Row{lb.Profile, lb.Name, lb.TypeShort(), lb.Scheme, lb.State, lb.VpcID, lb.DNSName, lb.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedALBs() []awsclient.LoadBalancer {
+	lbs := make([]awsclient.LoadBalancer, len(m.loadBalancers))
+	copy(lbs, m.loadBalancers)
+	if m.sortBy == sortNone {
+		return lbs
+	}
+	sort.Slice(lbs, func(i, j int) bool {
+		a, b := lbs[i], lbs[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortLBType:
+			less = a.LBType < b.LBType
+		case sortScheme:
+			less = a.Scheme < b.Scheme
+		case sortState:
+			less = a.State < b.State
+		case sortVpcID:
+			less = a.VpcID < b.VpcID
+		case sortRegion:
+			less = a.Region < b.Region
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return lbs
+}
+
+func (m *Model) selectedALB_() *awsclient.LoadBalancer {
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(m.displayedALBs) {
+		return nil
+	}
+	lb := m.displayedALBs[cursor]
+	return &lb
 }
