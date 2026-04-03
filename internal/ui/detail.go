@@ -802,6 +802,18 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 		}
 	}
 
+	if len(lb.Tags) > 0 {
+		b.WriteString(sectionStyle.Render(fmt.Sprintf("Tags (%d)", len(lb.Tags))) + "\n")
+		keys := make([]string, 0, len(lb.Tags))
+		for k := range lb.Tags {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			b.WriteString(row(k, tagStyle.Render(lb.Tags[k])))
+		}
+	}
+
 	var hint string
 	switch {
 	case detailCursor >= 0:

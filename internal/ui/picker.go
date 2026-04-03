@@ -95,6 +95,10 @@ func collectTagKeys(m Model) []string {
 		for _, c := range m.eksClusters {
 			addKeys(c.Tags)
 		}
+	case viewALB:
+		for _, lb := range m.loadBalancers {
+			addKeys(lb.Tags)
+		}
 	}
 	keys := make([]string, 0, len(seen))
 	for k := range seen {
@@ -128,6 +132,10 @@ func collectTagValues(m Model, key string) []string {
 	case viewEKS:
 		for _, c := range m.eksClusters {
 			addVal(c.Tags)
+		}
+	case viewALB:
+		for _, lb := range m.loadBalancers {
+			addVal(lb.Tags)
 		}
 	}
 	vals := make([]string, 0, len(seen))

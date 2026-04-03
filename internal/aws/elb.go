@@ -21,6 +21,7 @@ type LoadBalancer struct {
 	VpcID            string
 	AvailabilityZones []string
 	SecurityGroupIDs  []string
+	Tags             map[string]string
 }
 
 // DNSNameNorm returns the DNS name in lowercase without trailing dot (비교용).
@@ -136,6 +137,38 @@ func fetchLoadBalancers(ctx context.Context, profile, region string) ([]LoadBala
 			break
 		}
 		nextMarker = out.NextMarker
+	}
+
+	// 태그 조회 (DescribeTags는 ARN 기준, 최대 20개씩 배치 호출)
+	for i := 0; i < len(lbs); i += 20 {
+		end := i + 20
+		if end > len(lbs) {
+			end = len(lbs)
+		}
+		arns := make([]string, end-i)
+		for j, lb := range lbs[i:end] {
+			arns[j] = lb.ARN
+		}
+		tagOut, err := client.ELBv2.DescribeTags(ctx, &elbv2.DescribeTagsInput{
+			ResourceArns: arns,
+		})
+		if err != nil {
+			// 태그 조회 실패는 치명적이지 않으므로 무시
+			continue
+		}
+		arnToTags := make(map[string]map[string]string, len(tagOut.TagDescriptions))
+		for _, td := range tagOut.TagDescriptions {
+			m := make(map[string]string, len(td.Tags))
+			for _, t := range td.Tags {
+				m[aws.ToString(t.Key)] = aws.ToString(t.Value)
+			}
+			arnToTags[aws.ToString(td.ResourceArn)] = m
+		}
+		for j := i; j < end; j++ {
+			if tags, ok := arnToTags[lbs[j].ARN]; ok {
+				lbs[j].Tags = tags
+			}
+		}
 	}
 
 	return lbs, nil

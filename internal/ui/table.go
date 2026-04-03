@@ -1009,7 +1009,7 @@ func filterALBData(lbs []awsclient.LoadBalancer, filters []string) []awsclient.L
 	}
 	var out []awsclient.LoadBalancer
 	for _, lb := range lbs {
-		if matchAll(filters, lb.Profile, lb.Name, lb.LBType, lb.TypeShort(), lb.Scheme, lb.State, lb.VpcID, lb.DNSName, lb.Region) {
+		if matchAllWithTags(filters, lb.Tags, lb.Profile, lb.Name, lb.LBType, lb.TypeShort(), lb.Scheme, lb.State, lb.VpcID, lb.DNSName, lb.Region) {
 			out = append(out, lb)
 		}
 	}
