@@ -1102,10 +1102,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				return m, tea.Quit
 			case "esc":
-				m.mode = modeNormal
-				m.commandCursor = 0
-				m.input.SetValue("")
-				m.input.Blur()
+				if m.input.Value() != "" {
+					m.input.SetValue("")
+					m.commandCursor = 0
+				} else {
+					m.mode = modeNormal
+					m.input.Blur()
+				}
 				return m, nil
 			case "up":
 				if m.commandCursor > 0 {
