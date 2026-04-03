@@ -85,8 +85,9 @@ type rdsLoadedMsg struct {
 }
 
 type rdsENIsLoadedMsg struct {
-	enis []awsclient.ENI
-	err  error
+	enis         []awsclient.ENI
+	primaryENIID string
+	err          error
 }
 
 type listenersLoadedMsg struct {
@@ -359,6 +360,7 @@ type Model struct {
 	displayedRDS          []awsclient.DBInstance
 	selectedRDS           *awsclient.DBInstance
 	rdsENIs               []awsclient.ENI // nil = loading, non-nil = loaded
+	rdsENIPrimaryID       string
 	// ELB lazy-loaded detail data (nil = loading, non-nil = loaded)
 	albListeners          []awsclient.Listener    // listeners for current selectedALB
 	albTargetGroups       []awsclient.TargetGroup // TGs for current selectedALB
@@ -505,8 +507,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case rdsENIsLoadedMsg:
 		if msg.err == nil {
 			m.rdsENIs = msg.enis
+			m.rdsENIPrimaryID = msg.primaryENIID
 		} else {
 			m.rdsENIs = []awsclient.ENI{}
+			m.rdsENIPrimaryID = ""
 		}
 
 	case listenersLoadedMsg:
@@ -923,7 +927,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// RDS로 돌아올 때 ENI re-fetch
 					if m.selectedRDS != nil {
 						m.rdsENIs = nil
-						return m, fetchENIsForRDS(m.selectedRDS.Endpoint, m.enis)
+						return m, fetchENIsForRDS(m.selectedRDS.Endpoint, m.selectedRDS.SubnetIDs, m.enis)
 					}
 				} else {
 					m.screen = screenTable
@@ -1158,7 +1162,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = -1
 						m.detailHistory = nil
 						m.rdsENIs = nil // trigger lazy fetch
-						return m, fetchENIsForRDS(db.Endpoint, m.enis)
+						return m, fetchENIsForRDS(db.Endpoint, db.SubnetIDs, m.enis)
 					}
 				}
 				return m, nil

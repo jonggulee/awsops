@@ -126,34 +126,90 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 
 // --- RDS lazy fetch ---
 
-// fetchENIsForRDS resolves the RDS endpoint hostname to an IP and finds the
-// matching ENI from the already-loaded ENI list. No additional AWS API call needed.
-func fetchENIsForRDS(endpoint string, allENIs []awsclient.ENI) tea.Cmd {
+// fetchENIsForRDS finds primary and standby ENIs for an RDS instance.
+//
+// Primary: resolved by DNS lookup of db.Endpoint hostname → matched by private IP.
+// Standby: searched from allENIs where description="RDSNetworkInterface",
+//
+//	subnetID is in dbSubnetIDs, SG set exactly matches primary ENI's SGs,
+//	and it is not the primary ENI. Exact SG match avoids false positives
+//	from other RDS instances that share the same subnet group.
+func fetchENIsForRDS(endpoint string, dbSubnetIDs []string, allENIs []awsclient.ENI) tea.Cmd {
 	return func() tea.Msg {
 		if endpoint == "" {
 			return rdsENIsLoadedMsg{enis: []awsclient.ENI{}}
 		}
+
+		// 1. DNS resolve → primary IP
 		addrs, err := net.LookupHost(endpoint)
 		if err != nil {
 			return rdsENIsLoadedMsg{enis: []awsclient.ENI{}, err: err}
 		}
-		ipSet := make(map[string]bool, len(addrs))
+		primaryIPSet := make(map[string]bool, len(addrs))
 		for _, a := range addrs {
-			ipSet[a] = true
+			primaryIPSet[a] = true
 		}
-		var matched []awsclient.ENI
-		for _, e := range allENIs {
+
+		subnetSet := make(map[string]bool, len(dbSubnetIDs))
+		for _, s := range dbSubnetIDs {
+			subnetSet[s] = true
+		}
+
+		// 2. Primary ENI 탐색
+		var primary *awsclient.ENI
+		for i := range allENIs {
+			e := &allENIs[i]
 			for _, ip := range e.PrivateIPs {
-				if ipSet[ip] {
-					matched = append(matched, e)
+				if primaryIPSet[ip] {
+					primary = e
 					break
 				}
 			}
+			if primary != nil {
+				break
+			}
 		}
-		if matched == nil {
-			matched = []awsclient.ENI{}
+
+		if primary == nil {
+			return rdsENIsLoadedMsg{enis: []awsclient.ENI{}}
 		}
-		return rdsENIsLoadedMsg{enis: matched}
+
+		// primary SG 세트 (exact match용)
+		primarySGSet := make(map[string]bool, len(primary.SecurityGroupIDs))
+		for _, sg := range primary.SecurityGroupIDs {
+			primarySGSet[sg] = true
+		}
+
+		result := []awsclient.ENI{*primary}
+
+		// 3. Standby ENI 탐색: RDSNetworkInterface + DB 서브넷 + SG 완전 일치 + primary 제외
+		for _, e := range allENIs {
+			if e.ENIID == primary.ENIID {
+				continue
+			}
+			if e.Description != "RDSNetworkInterface" {
+				continue
+			}
+			if !subnetSet[e.SubnetID] {
+				continue
+			}
+			// SG 세트 완전 일치 확인
+			if len(e.SecurityGroupIDs) != len(primary.SecurityGroupIDs) {
+				continue
+			}
+			match := true
+			for _, sg := range e.SecurityGroupIDs {
+				if !primarySGSet[sg] {
+					match = false
+					break
+				}
+			}
+			if match {
+				result = append(result, e)
+			}
+		}
+
+		return rdsENIsLoadedMsg{enis: result, primaryENIID: primary.ENIID}
 	}
 }
 

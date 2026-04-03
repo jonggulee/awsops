@@ -1176,7 +1176,7 @@ func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLi
 	return b.String()
 }
 
-func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, enis []awsclient.ENI, spinnerView string, detailCursor int, hasHistory bool, width int) string {
+func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, enis []awsclient.ENI, primaryENIID string, spinnerView string, detailCursor int, hasHistory bool, width int) string {
 	if db == nil {
 		return ""
 	}
@@ -1240,10 +1240,15 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 			if len(e.PrivateIPs) > 1 {
 				ip = strings.Join(e.PrivateIPs, ", ")
 			}
+			role := mapSepStyle.Render("standby")
+			if e.ENIID == primaryENIID {
+				role = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("primary")
+			}
 			b.WriteString("  " + valueStyle.Render(e.ENIID) +
 				"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render(ip) +
 				"  " + mapSepStyle.Render(e.Status) +
-				"  " + mapSepStyle.Render(orDash(e.AvailabilityZone)) + "\n")
+				"  " + mapSepStyle.Render(orDash(e.AvailabilityZone)) +
+				"  " + role + "\n")
 		}
 	}
 
