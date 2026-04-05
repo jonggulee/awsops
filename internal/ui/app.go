@@ -124,6 +124,29 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchElastiCacheWithRegions(regions []string) tea.Cmd {
+	return func() tea.Msg {
+		clusters, errs := awsclient.FetchAllElastiCacheClusters(context.Background(), regions)
+		return elastiCacheLoadedMsg{clusters: clusters, errs: errs}
+	}
+}
+
+// --- S3 ---
+
+func fetchS3Buckets() tea.Cmd {
+	return func() tea.Msg {
+		buckets, errs := awsclient.FetchAllS3Buckets(context.Background())
+		return s3LoadedMsg{buckets: buckets, errs: errs}
+	}
+}
+
+func fetchS3Tags(profile, bucketName string) tea.Cmd {
+	return func() tea.Msg {
+		tags, err := awsclient.FetchS3BucketTags(context.Background(), profile, bucketName)
+		return s3TagsLoadedMsg{tags: tags, err: err}
+	}
+}
+
 // --- RDS lazy fetch ---
 
 // fetchENIsForRDS finds primary and standby ENIs for an RDS instance.

@@ -297,6 +297,168 @@ func (m *Model) selectedRDS_() *awsclient.DBInstance {
 	return &db
 }
 
+func buildS3Table(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile,  "Profile",       profileWidth),
+		h(2, sortName,     "Name",          40),
+		h(3, sortRegion,   "Region",        18),
+		h(4, sortVersioning,    "Versioning",    12),
+		h(5, sortPublicAccess,  "Public Access", 14),
+		h(6, sortCreateTime,  "Created",       12),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterS3Data(buckets []awsclient.S3Bucket, filters []string, regions []string) []awsclient.S3Bucket {
+	regionSet := make(map[string]bool, len(regions))
+	for _, r := range regions {
+		regionSet[r] = true
+	}
+	var out []awsclient.S3Bucket
+	for _, b := range buckets {
+		if len(regionSet) > 0 && !regionSet[b.Region] {
+			continue
+		}
+		if len(filters) > 0 && !matchAllWithTags(filters, b.Tags, b.Profile, b.Name, b.Region, b.VersioningStatus, b.PublicAccess) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func s3Rows(buckets []awsclient.S3Bucket) []table.Row {
+	rows := make([]table.Row, len(buckets))
+	for i, b := range buckets {
+		rows[i] = table.Row{b.Profile, b.Name, b.Region, b.VersioningStatus, b.PublicAccess, b.CreationDateStr()}
+	}
+	return rows
+}
+
+func (m *Model) sortedS3() []awsclient.S3Bucket {
+	buckets := make([]awsclient.S3Bucket, len(m.s3Buckets))
+	copy(buckets, m.s3Buckets)
+	if m.sortBy == sortNone {
+		return buckets
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		a, b := buckets[i], buckets[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.Name < b.Name
+		case sortRegion:
+			less = a.Region < b.Region
+		case sortCreateTime:
+			less = a.CreationDate.Before(b.CreationDate)
+		case sortVersioning:
+			less = a.VersioningStatus < b.VersioningStatus
+		case sortPublicAccess:
+			less = a.PublicAccess < b.PublicAccess
+		default:
+			return false
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return buckets
+}
+
+func buildElastiCacheTable(rows []table.Row, height, profileWidth int, sortBy sortCol, sortAsc bool, colOffset int) table.Model {
+	h := func(n int, col sortCol, title string, w int) table.Column {
+		return table.Column{Title: colTitle(n, col, title, sortBy, sortAsc), Width: w}
+	}
+	allCols := []table.Column{
+		h(1, sortProfile, "Profile",   profileWidth),
+		h(2, sortName,    "ID",        30),
+		h(3, sortEngine,  "Engine",    12),
+		h(4, sortType,    "Node Type", 20),
+		h(5, sortState,   "Status",    14),
+		h(6, sortNone,    "Nodes",      6),
+		h(7, sortNone,    "Endpoint",  50),
+		h(8, sortRegion,  "Region",    18),
+	}
+	cols := allCols
+	if colOffset > 0 && colOffset < len(allCols) {
+		cols = allCols[colOffset:]
+	}
+	return newTable(cols, rows, height)
+}
+
+func filterElastiCacheData(clusters []awsclient.ElastiCacheCluster, filters []string, regions []string) []awsclient.ElastiCacheCluster {
+	regionSet := make(map[string]bool, len(regions))
+	for _, r := range regions {
+		regionSet[r] = true
+	}
+	var out []awsclient.ElastiCacheCluster
+	for _, c := range clusters {
+		if len(regionSet) > 0 && !regionSet[c.Region] {
+			continue
+		}
+		if len(filters) > 0 && !matchAllWithTags(filters, nil, c.Profile, c.ID, c.Engine, c.EngineVersion, c.NodeType, c.Status, c.Endpoint) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func elastiCacheRows(clusters []awsclient.ElastiCacheCluster) []table.Row {
+	rows := make([]table.Row, len(clusters))
+	for i, c := range clusters {
+		endpoint := c.Endpoint
+		if c.Port > 0 {
+			endpoint = fmt.Sprintf("%s:%d", c.Endpoint, c.Port)
+		}
+		rows[i] = table.Row{c.Profile, c.ID, c.Engine + " " + c.EngineVersion, c.NodeType, c.Status, fmt.Sprintf("%d", c.NumNodes), endpoint, c.Region}
+	}
+	return rows
+}
+
+func (m *Model) sortedElastiCache() []awsclient.ElastiCacheCluster {
+	clusters := make([]awsclient.ElastiCacheCluster, len(m.elastiCacheClusters))
+	copy(clusters, m.elastiCacheClusters)
+	if m.sortBy == sortNone {
+		return clusters
+	}
+	sort.Slice(clusters, func(i, j int) bool {
+		a, b := clusters[i], clusters[j]
+		var less bool
+		switch m.sortBy {
+		case sortProfile:
+			less = a.Profile < b.Profile
+		case sortName:
+			less = a.ID < b.ID
+		case sortEngine:
+			less = a.Engine < b.Engine
+		case sortType:
+			less = a.NodeType < b.NodeType
+		case sortState:
+			less = a.Status < b.Status
+		case sortRegion:
+			less = a.Region < b.Region
+		default:
+			return false
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
+	})
+	return clusters
+}
+
 func (m *Model) applyCommand(cmd string) {
 	switch strings.TrimSpace(strings.ToLower(cmd)) {
 	case "ec2":
@@ -321,6 +483,10 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewALB
 	case "rds":
 		m.view = viewRDS
+	case "s3":
+		m.view = viewS3
+	case "redis", "elasticache":
+		m.view = viewElastiCache
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -361,6 +527,12 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewRDS:
 		m.displayedRDS = filterRDSData(m.sortedRDS(), m.filters)
 		return buildRDSTable(rowsSliced(rdsRows(m.displayedRDS), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewS3:
+		m.displayedS3 = filterS3Data(m.sortedS3(), m.filters, selectedRegionIDs(m.regions))
+		return buildS3Table(rowsSliced(s3Rows(m.displayedS3), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewElastiCache:
+		m.displayedElastiCache = filterElastiCacheData(m.sortedElastiCache(), m.filters, selectedRegionIDs(m.regions))
+		return buildElastiCacheTable(rowsSliced(elastiCacheRows(m.displayedElastiCache), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -407,6 +579,10 @@ func (m *Model) maxColOffset() int {
 	case viewALB:
 		return 6
 	case viewRDS:
+		return 7
+	case viewS3:
+		return 5
+	case viewElastiCache:
 		return 7
 	}
 	return 0

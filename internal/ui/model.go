@@ -79,9 +79,24 @@ type albLoadedMsg struct {
 	errs []error
 }
 
+type s3LoadedMsg struct {
+	buckets []awsclient.S3Bucket
+	errs    []error
+}
+
+type s3TagsLoadedMsg struct {
+	tags map[string]string
+	err  error
+}
+
 type rdsLoadedMsg struct {
 	instances []awsclient.DBInstance
 	errs      []error
+}
+
+type elastiCacheLoadedMsg struct {
+	clusters []awsclient.ElastiCacheCluster
+	errs     []error
 }
 
 type rdsENIsLoadedMsg struct {
@@ -144,6 +159,8 @@ const (
 	viewRoute53
 	viewALB
 	viewRDS
+	viewS3
+	viewElastiCache
 )
 
 type screen int
@@ -168,7 +185,9 @@ var viewNames = map[viewType]string{
 	viewEKS:     "eks",
 	viewRoute53: "route53",
 	viewALB:     "elb",
-	viewRDS:     "rds",
+	viewRDS:          "rds",
+	viewS3:           "s3",
+	viewElastiCache:  "elasticache",
 }
 
 // --- sort ---
@@ -211,6 +230,8 @@ const (
 	sortEngine
 	sortDBClass
 	sortCreateTime
+	sortVersioning
+	sortPublicAccess
 )
 
 // EC2:    1=Profile 2=Name 3=InstanceID 4=State 5=Type 6=PrivateIP 7=PublicIP 8=VpcID 9=SubnetID 10=Region
@@ -239,6 +260,12 @@ var eksSortCols = []sortCol{sortProfile, sortName, sortState, sortVersion, sortV
 
 // RDS:    1=Profile 2=Identifier 3=Engine 4=Class 5=Status 6=VpcID 7=Endpoint 8=Region
 var rdsSortCols = []sortCol{sortProfile, sortName, sortEngine, sortDBClass, sortState, sortVpcID, sortNone, sortRegion}
+
+// S3:            1=Profile 2=Name 3=Region 4=Versioning 5=PublicAccess 6=Created
+var s3SortCols = []sortCol{sortProfile, sortName, sortRegion, sortVersioning, sortPublicAccess, sortCreateTime}
+
+// ElastiCache:   1=Profile 2=ID 3=Engine 4=NodeType 5=Status 6=Nodes 7=Endpoint 8=Region
+var elastiCacheSortCols = []sortCol{sortProfile, sortName, sortEngine, sortType, sortState, sortNone, sortNone, sortRegion}
 
 var sortColNames = map[sortCol]string{
 	sortVersion: "Version",
@@ -362,6 +389,13 @@ type Model struct {
 	selectedRDS           *awsclient.DBInstance
 	rdsENIs               []awsclient.ENI // nil = loading, non-nil = loaded
 	rdsENIPrimaryID       string
+	s3Buckets             []awsclient.S3Bucket
+	displayedS3           []awsclient.S3Bucket
+	selectedS3            *awsclient.S3Bucket
+	s3Tags                map[string]string // nil = loading, non-nil = loaded
+	elastiCacheClusters   []awsclient.ElastiCacheCluster
+	displayedElastiCache  []awsclient.ElastiCacheCluster
+	selectedElastiCache   *awsclient.ElastiCacheCluster
 	// ELB lazy-loaded detail data (nil = loading, non-nil = loaded)
 	albListeners          []awsclient.Listener    // listeners for current selectedALB
 	albTargetGroups       []awsclient.TargetGroup // TGs for current selectedALB
@@ -411,6 +445,8 @@ func (m Model) Init() tea.Cmd {
 		fetchRoute53(),
 		fetchALBWithRegions(regions),
 		fetchRDSWithRegions(regions),
+		fetchS3Buckets(),
+		fetchElastiCacheWithRegions(regions),
 	)
 }
 
@@ -500,6 +536,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rdsLoadedMsg:
 		m.rdsInstances = msg.instances
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case s3LoadedMsg:
+		m.s3Buckets = msg.buckets
+		m.fetchErr = append(m.fetchErr, msg.errs...)
+		if !m.loading {
+			m.table = m.buildCurrentTable()
+		}
+
+	case s3TagsLoadedMsg:
+		if msg.err == nil {
+			m.s3Tags = msg.tags
+		} else {
+			m.s3Tags = map[string]string{}
+		}
+
+	case elastiCacheLoadedMsg:
+		m.elastiCacheClusters = msg.clusters
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
@@ -638,8 +695,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.route53Records = nil
 				m.loadBalancers = nil
 				m.rdsInstances = nil
+				m.s3Buckets = nil
+				m.elastiCacheClusters = nil
 				m.fetchErr = nil
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids), fetchRDSWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids), fetchRDSWithRegions(ids), fetchS3Buckets(), fetchElastiCacheWithRegions(ids))
 			}
 			return m, nil
 		}
@@ -1166,6 +1225,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.rdsENIs = nil // trigger lazy fetch
 						return m, fetchENIsForRDS(db.Endpoint, db.SubnetIDs, m.enis)
 					}
+				case viewS3:
+					if b := m.selectedS3_(); b != nil {
+						m.selectedS3 = b
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53, m.selectedALB, m.selectedRDS = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+						m.s3Tags = nil // trigger lazy fetch
+						return m, fetchS3Tags(b.Profile, b.Name)
+					}
+				case viewElastiCache:
+					if ec := m.selectedElastiCache_(); ec != nil {
+						m.selectedElastiCache = ec
+						m.selectedInst, m.selectedSG, m.selectedVPC, m.selectedSubnet, m.selectedTGWAtt, m.selectedCert, m.selectedENI, m.selectedEKS, m.selectedRoute53, m.selectedALB, m.selectedRDS, m.selectedS3 = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+						m.screen = screenDetail
+						m.detailScroll = 0
+						m.detailCursor = -1
+						m.detailHistory = nil
+					}
 				}
 				return m, nil
 			case "c":
@@ -1211,8 +1290,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.eksClusters = nil
 				m.route53Records = nil
 				m.loadBalancers = nil
+				m.rdsInstances = nil
+				m.s3Buckets = nil
+				m.elastiCacheClusters = nil
 				ids := selectedRegionIDs(m.regions)
-				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids))
+				return m, tea.Batch(m.spinner.Tick, fetchInstancesWithRegions(ids), fetchSGWithRegions(ids), fetchVPCsWithRegions(ids), fetchTGWsWithRegions(ids), fetchRouteTablesWithRegions(ids), fetchENIsWithRegions(ids), fetchCertificatesWithRegions(ids), fetchEKSWithRegions(ids), fetchRoute53(), fetchALBWithRegions(ids), fetchRDSWithRegions(ids), fetchS3Buckets(), fetchElastiCacheWithRegions(ids))
 			case "R":
 				// 취소 시 복원할 수 있도록 현재 상태 저장
 				prev := make([]regionEntry, len(m.regions))
@@ -1385,6 +1467,9 @@ func (m *Model) detailInteractiveFieldCount() int {
 	}
 	if m.selectedRDS != nil {
 		return len(m.selectedRDS.SubnetIDs) + len(m.selectedRDS.SecurityGroupIDs) + len(m.rdsENIs)
+	}
+	if m.selectedS3 != nil {
+		return 0
 	}
 	return 0
 }
@@ -1814,6 +1899,22 @@ func (m *Model) selectedEKS_() *awsclient.EKSCluster {
 	return nil
 }
 
+func (m *Model) selectedS3_() *awsclient.S3Bucket {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedS3) {
+		return &m.displayedS3[c]
+	}
+	return nil
+}
+
+func (m *Model) selectedElastiCache_() *awsclient.ElastiCacheCluster {
+	c := m.table.Cursor()
+	if c >= 0 && c < len(m.displayedElastiCache) {
+		return &m.displayedElastiCache[c]
+	}
+	return nil
+}
+
 func (m *Model) sortByIndex(n int) {
 	cols := ec2SortCols
 	switch m.view {
@@ -1833,6 +1934,10 @@ func (m *Model) sortByIndex(n int) {
 		cols = eksSortCols
 	case viewRDS:
 		cols = rdsSortCols
+	case viewS3:
+		cols = s3SortCols
+	case viewElastiCache:
+		cols = elastiCacheSortCols
 	}
 	if n < 0 || n >= len(cols) {
 		return

@@ -121,8 +121,14 @@ func (m Model) View() string {
 		sections = append(sections, errStyle.Render(fmt.Sprintf("⚠ %d profile(s) failed to load", len(m.fetchErr))))
 	}
 
-	sections = append(sections, m.table.View())
-	sections = append(sections, m.renderScrollIndicator())
+	if m.view == viewS3 && m.s3Buckets == nil {
+		sections = append(sections, fmt.Sprintf("\n  %s Fetching S3 buckets...", m.spinner.View()))
+	} else if m.view == viewElastiCache && m.elastiCacheClusters == nil {
+		sections = append(sections, fmt.Sprintf("\n  %s Fetching ElastiCache clusters...", m.spinner.View()))
+	} else {
+		sections = append(sections, m.table.View())
+		sections = append(sections, m.renderScrollIndicator())
+	}
 	sections = append(sections, m.renderHintBar())
 
 	return strings.Join(sections, "\n")
@@ -271,6 +277,10 @@ func (m Model) currentDetailContent() string {
 		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.width)
 	case m.selectedRDS != nil:
 		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.rdsENIs, m.rdsENIPrimaryID, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.width)
+	case m.selectedS3 != nil:
+		return renderS3Detail(m.selectedS3, m.s3Tags, m.spinner.View(), len(m.detailHistory) > 0, m.width)
+	case m.selectedElastiCache != nil:
+		return renderElastiCacheDetail(m.selectedElastiCache, m.buildSGNameMap(), len(m.detailHistory) > 0, m.width)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {

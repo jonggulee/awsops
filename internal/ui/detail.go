@@ -1272,6 +1272,103 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	return b.String()
 }
 
+func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[string]string, hasHistory bool, width int) string {
+	var b strings.Builder
+
+	b.WriteString(sectionStyle.Render("General") + "\n")
+	b.WriteString(row("Profile", ec.Profile))
+	b.WriteString(row("ID", ec.ID))
+	b.WriteString(row("Engine", ec.Engine+" "+ec.EngineVersion))
+	b.WriteString(row("Node Type", ec.NodeType))
+	b.WriteString(row("Status", coloredElastiCacheStatus(ec.Status)))
+	b.WriteString(row("Nodes", fmt.Sprintf("%d", ec.NumNodes)))
+	b.WriteString(row("Multi-AZ", ec.MultiAZ))
+	b.WriteString(row("Region", ec.Region))
+
+	b.WriteString("\n" + sectionStyle.Render("Network") + "\n")
+	endpoint := ec.Endpoint
+	if ec.Port > 0 {
+		endpoint = fmt.Sprintf("%s:%d", ec.Endpoint, ec.Port)
+	}
+	b.WriteString(row("Endpoint", orDash(endpoint)))
+	b.WriteString(row("Subnet Group", orDash(ec.SubnetGroupName)))
+
+	if len(ec.SecurityGroupIDs) > 0 {
+		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(ec.SecurityGroupIDs))) + "\n")
+		for _, sgID := range ec.SecurityGroupIDs {
+			name := sgNameMap[sgID]
+			val := sgID
+			if name != "" {
+				val = sgID + "  " + mapSepStyle.Render(name)
+			}
+			b.WriteString(row("", val))
+		}
+	}
+
+	hint := detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("j/k", "Scroll"))
+	if hasHistory {
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("j/k", "Scroll"))
+	}
+	b.WriteString(hint)
+	return b.String()
+}
+
+func coloredElastiCacheStatus(status string) string {
+	switch status {
+	case "available":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(status)
+	case "creating", "modifying", "snapshotting", "rebooting cluster nodes":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(status)
+	case "deleting", "incompatible-parameters", "incompatible-network", "restore-failed":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(status)
+	default:
+		return status
+	}
+}
+
+func renderS3Detail(b *awsclient.S3Bucket, tags map[string]string, spinnerView string, hasHistory bool, width int) string {
+	var sb strings.Builder
+
+	sb.WriteString(sectionStyle.Render("General") + "\n")
+	sb.WriteString(row("Profile", b.Profile))
+	sb.WriteString(row("Name", b.Name))
+	sb.WriteString(row("Region", orDash(b.Region)))
+	sb.WriteString(row("Created", b.CreationDateStr()))
+
+	sb.WriteString("\n" + sectionStyle.Render("Access") + "\n")
+	pubColor := lipgloss.Color("9")
+	if b.PublicAccess == "Blocked" {
+		pubColor = lipgloss.Color("10")
+	}
+	sb.WriteString(row("Public Access", lipgloss.NewStyle().Foreground(pubColor).Render(b.PublicAccess)))
+
+	sb.WriteString("\n" + sectionStyle.Render("Versioning") + "\n")
+	verColor := lipgloss.Color("10")
+	if b.VersioningStatus != "Enabled" {
+		verColor = lipgloss.Color("243")
+	}
+	sb.WriteString(row("Versioning", lipgloss.NewStyle().Foreground(verColor).Render(b.VersioningStatus)))
+
+	sb.WriteString("\n" + sectionStyle.Render("Tags") + "\n")
+	switch {
+	case tags == nil:
+		sb.WriteString("  " + spinnerView + "\n")
+	case len(tags) == 0:
+		sb.WriteString(row("", "-"))
+	default:
+		sb.WriteString(renderTags(tags, width))
+	}
+
+	var hint string
+	if hasHistory {
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("j/k", "Scroll"))
+	} else {
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("j/k", "Scroll"))
+	}
+	sb.WriteString(hint)
+	return sb.String()
+}
+
 func coloredRDSStatus(status string) string {
 	switch status {
 	case "available":
