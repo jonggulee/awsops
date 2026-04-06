@@ -1318,12 +1318,7 @@ func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[str
 		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Subnet Group  (%d subnets)", subnetCount)) + "\n")
 		b.WriteString(row("Name", orDash(ec.SubnetGroupName)))
 		for i, subnetID := range subnetIDs {
-			name := subnetNames[subnetID]
-			val := valueStyle.Render(subnetID)
-			if name != "" {
-				val += "  " + mapSepStyle.Render(name)
-			}
-			b.WriteString(rowMaybeActive("Subnet", val, detailCursor == i))
+			b.WriteString(rowMaybeActive(fmt.Sprintf("Subnet %d", i+1), withName(subnetID, subnetNames[subnetID]), detailCursor == i))
 		}
 	}
 
@@ -1331,12 +1326,7 @@ func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[str
 	if sgCount > 0 {
 		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", sgCount)) + "\n")
 		for i, sgID := range ec.SecurityGroupIDs {
-			name := sgNameMap[sgID]
-			val := valueStyle.Render(sgID)
-			if name != "" {
-				val += "  " + mapSepStyle.Render(name)
-			}
-			b.WriteString(rowMaybeActive("SG", val, detailCursor == subnetCount+i))
+			b.WriteString(rowMaybeActive(fmt.Sprintf("SG %d", i+1), withName(sgID, sgNameMap[sgID]), detailCursor == subnetCount+i))
 		}
 	}
 
