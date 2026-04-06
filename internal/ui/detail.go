@@ -1282,8 +1282,11 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	return b.String()
 }
 
-func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[string]string, hasHistory bool, profileToAccount map[string]string, width int) string {
+func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[string]string, subnetIDs []string, subnetNames map[string]string, spinnerView string, detailCursor int, hasHistory bool, profileToAccount map[string]string, width int) string {
 	var b strings.Builder
+
+	subnetCount := len(subnetIDs)
+	sgCount := len(ec.SecurityGroupIDs)
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
 	b.WriteString(row("Profile", profileWithAccount(ec.Profile, profileToAccount)))
@@ -1301,23 +1304,50 @@ func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[str
 		endpoint = fmt.Sprintf("%s:%d", ec.Endpoint, ec.Port)
 	}
 	b.WriteString(row("Endpoint", orDash(endpoint)))
-	b.WriteString(row("Subnet Group", orDash(ec.SubnetGroupName)))
 
-	if len(ec.SecurityGroupIDs) > 0 {
-		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", len(ec.SecurityGroupIDs))) + "\n")
-		for _, sgID := range ec.SecurityGroupIDs {
-			name := sgNameMap[sgID]
-			val := sgID
+	// Subnet Group (lazy loaded)
+	switch {
+	case subnetIDs == nil:
+		b.WriteString("\n" + sectionStyle.Render("Subnet Group") + "\n")
+		b.WriteString(row("Name", orDash(ec.SubnetGroupName)))
+		b.WriteString("  " + spinnerView + "\n")
+	case len(subnetIDs) == 0:
+		b.WriteString("\n" + sectionStyle.Render("Subnet Group") + "\n")
+		b.WriteString(row("Name", orDash(ec.SubnetGroupName)))
+	default:
+		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Subnet Group  (%d subnets)", subnetCount)) + "\n")
+		b.WriteString(row("Name", orDash(ec.SubnetGroupName)))
+		for i, subnetID := range subnetIDs {
+			name := subnetNames[subnetID]
+			val := valueStyle.Render(subnetID)
 			if name != "" {
-				val = sgID + "  " + mapSepStyle.Render(name)
+				val += "  " + mapSepStyle.Render(name)
 			}
-			b.WriteString(row("", val))
+			b.WriteString(rowMaybeActive("Subnet", val, detailCursor == i))
 		}
 	}
 
-	hint := detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("j/k", "Scroll"))
-	if hasHistory {
-		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("j/k", "Scroll"))
+	// Security Groups
+	if sgCount > 0 {
+		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("Security Groups (%d)", sgCount)) + "\n")
+		for i, sgID := range ec.SecurityGroupIDs {
+			name := sgNameMap[sgID]
+			val := valueStyle.Render(sgID)
+			if name != "" {
+				val += "  " + mapSepStyle.Render(name)
+			}
+			b.WriteString(rowMaybeActive("SG", val, detailCursor == subnetCount+i))
+		}
+	}
+
+	var hint string
+	switch {
+	case detailCursor >= 0:
+		hint = detailHintBar(width, hintItem("esc", "Deselect"), hintItem("enter", "Open"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
+	case hasHistory:
+		hint = detailHintBar(width, hintItem("esc", "Back ◀"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
+	default:
+		hint = detailHintBar(width, hintItem("esc/q", "Back to list"), hintItem("↑/↓", "Navigate"), hintItem("j/k", "Scroll"))
 	}
 	b.WriteString(hint)
 	return b.String()

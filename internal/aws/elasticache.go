@@ -244,6 +244,29 @@ func fetchElastiCacheForProfileRegion(ctx context.Context, profile, region strin
 	return result, nil
 }
 
+// FetchSubnetGroupForElastiCache fetches the subnet IDs in a given cache subnet group.
+func FetchSubnetGroupForElastiCache(ctx context.Context, profile, region, subnetGroupName string) ([]string, error) {
+	client, err := NewProfileClient(ctx, profile, region)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.ElastiCache.DescribeCacheSubnetGroups(ctx, &elasticache.DescribeCacheSubnetGroupsInput{
+		CacheSubnetGroupName: aws.String(subnetGroupName),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(out.CacheSubnetGroups) == 0 {
+		return []string{}, nil
+	}
+	sg := out.CacheSubnetGroups[0]
+	ids := make([]string, 0, len(sg.Subnets))
+	for _, s := range sg.Subnets {
+		ids = append(ids, aws.ToString(s.SubnetIdentifier))
+	}
+	return ids, nil
+}
+
 func engineName(e string) string {
 	switch e {
 	case "redis":

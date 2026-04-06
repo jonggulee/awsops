@@ -99,6 +99,11 @@ type elastiCacheLoadedMsg struct {
 	errs     []error
 }
 
+type elastiCacheSubnetGroupLoadedMsg struct {
+	subnetIDs []string
+	err       error
+}
+
 type rdsENIsLoadedMsg struct {
 	enis         []awsclient.ENI
 	primaryENIID string
@@ -306,12 +311,13 @@ type detailSnapshot struct {
 	selectedEKS         *awsclient.EKSCluster
 	selectedRoute53     *awsclient.Route53Record
 	selectedALB         *awsclient.LoadBalancer
-	selectedRDS         *awsclient.DBInstance
-	selectedListener    *awsclient.Listener
-	selectedRule        *awsclient.ListenerRule
-	selectedTargetGroup *awsclient.TargetGroup
-	detailScroll        int
-	detailCursor        int
+	selectedRDS          *awsclient.DBInstance
+	selectedElastiCache  *awsclient.ElastiCacheCluster
+	selectedListener     *awsclient.Listener
+	selectedRule         *awsclient.ListenerRule
+	selectedTargetGroup  *awsclient.TargetGroup
+	detailScroll         int
+	detailCursor         int
 }
 
 // --- model ---
@@ -398,6 +404,7 @@ type Model struct {
 	elastiCacheClusters   []awsclient.ElastiCacheCluster
 	displayedElastiCache  []awsclient.ElastiCacheCluster
 	selectedElastiCache   *awsclient.ElastiCacheCluster
+	elastiCacheSubnetIDs  []string // nil = loading, non-nil = loaded
 	// ELB lazy-loaded detail data (nil = loading, non-nil = loaded)
 	albListeners          []awsclient.Listener    // listeners for current selectedALB
 	albTargetGroups       []awsclient.TargetGroup // TGs for current selectedALB
@@ -562,6 +569,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchErr = append(m.fetchErr, msg.errs...)
 		if !m.loading {
 			m.table = m.buildCurrentTable()
+		}
+
+	case elastiCacheSubnetGroupLoadedMsg:
+		if msg.err == nil {
+			m.elastiCacheSubnetIDs = msg.subnetIDs
+		} else {
+			m.elastiCacheSubnetIDs = []string{}
 		}
 
 	case rdsENIsLoadedMsg:
@@ -982,6 +996,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedRoute53 = prev.selectedRoute53
 					m.selectedALB = prev.selectedALB
 					m.selectedRDS = prev.selectedRDS
+					m.selectedElastiCache = prev.selectedElastiCache
 					m.selectedListener = prev.selectedListener
 					m.selectedRule = prev.selectedRule
 					m.selectedTargetGroup = prev.selectedTargetGroup
@@ -991,6 +1006,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.selectedRDS != nil {
 						m.rdsENIs = nil
 						return m, fetchENIsForRDS(m.selectedRDS.Endpoint, m.selectedRDS.SubnetIDs, m.enis)
+					}
+					// ElastiCache로 돌아올 때 subnet group re-fetch
+					if ec := m.selectedElastiCache; ec != nil {
+						m.elastiCacheSubnetIDs = nil
+						if ec.SubnetGroupName != "" {
+							return m, fetchElastiCacheSubnetGroup(ec.Profile, ec.Region, ec.SubnetGroupName)
+						}
+						m.elastiCacheSubnetIDs = []string{}
 					}
 				} else {
 					m.screen = screenTable
@@ -1002,6 +1025,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedRoute53 = nil
 					m.selectedALB = nil
 					m.selectedRDS = nil
+					m.selectedElastiCache = nil
+					m.elastiCacheSubnetIDs = nil
 					m.selectedListener = nil
 					m.selectedRule = nil
 					m.selectedTargetGroup = nil
@@ -1246,6 +1271,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailScroll = 0
 						m.detailCursor = -1
 						m.detailHistory = nil
+						m.elastiCacheSubnetIDs = nil // trigger lazy fetch
+						if ec.SubnetGroupName != "" {
+							return m, fetchElastiCacheSubnetGroup(ec.Profile, ec.Region, ec.SubnetGroupName)
+						}
+						m.elastiCacheSubnetIDs = []string{}
 					}
 				}
 				return m, nil
@@ -1472,6 +1502,10 @@ func (m *Model) detailInteractiveFieldCount() int {
 	}
 	if m.selectedS3 != nil {
 		return 0
+	}
+	if m.selectedElastiCache != nil {
+		subnetCount := len(m.elastiCacheSubnetIDs) // 0 if nil (loading)
+		return subnetCount + len(m.selectedElastiCache.SecurityGroupIDs)
 	}
 	return 0
 }
@@ -1721,6 +1755,47 @@ func (m *Model) navigateFromDetail() tea.Cmd {
 						m.detailHistory = append(m.detailHistory, snapshot)
 						m.selectedSG = &m.groups[i]
 						m.selectedRDS = nil
+						m.detailScroll = 0
+						m.detailCursor = -1
+						return nil
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	// ElastiCache: Subnet(0..subnetCount-1), SG(subnetCount..)
+	if m.selectedElastiCache != nil {
+		ec := m.selectedElastiCache
+		subnetCount := len(m.elastiCacheSubnetIDs)
+		sgCount := len(ec.SecurityGroupIDs)
+		snapshot := detailSnapshot{
+			selectedElastiCache: ec,
+			detailScroll:        m.detailScroll,
+			detailCursor:        m.detailCursor,
+		}
+		if m.detailCursor < subnetCount {
+			subnetID := m.elastiCacheSubnetIDs[m.detailCursor]
+			for i := range m.subnets {
+				if m.subnets[i].SubnetID == subnetID {
+					m.detailHistory = append(m.detailHistory, snapshot)
+					m.selectedSubnet = &m.subnets[i]
+					m.selectedElastiCache = nil
+					m.detailScroll = 0
+					m.detailCursor = -1
+					return nil
+				}
+			}
+		} else {
+			sgIdx := m.detailCursor - subnetCount
+			if sgIdx < sgCount {
+				sgID := ec.SecurityGroupIDs[sgIdx]
+				for i := range m.groups {
+					if m.groups[i].GroupID == sgID {
+						m.detailHistory = append(m.detailHistory, snapshot)
+						m.selectedSG = &m.groups[i]
+						m.selectedElastiCache = nil
 						m.detailScroll = 0
 						m.detailCursor = -1
 						return nil

@@ -124,6 +124,13 @@ func fetchRDSWithRegions(regions []string) tea.Cmd {
 	}
 }
 
+func fetchElastiCacheSubnetGroup(profile, region, subnetGroupName string) tea.Cmd {
+	return func() tea.Msg {
+		subnetIDs, err := awsclient.FetchSubnetGroupForElastiCache(context.Background(), profile, region, subnetGroupName)
+		return elastiCacheSubnetGroupLoadedMsg{subnetIDs: subnetIDs, err: err}
+	}
+}
+
 func fetchElastiCacheWithRegions(regions []string) tea.Cmd {
 	return func() tea.Msg {
 		clusters, errs := awsclient.FetchAllElastiCacheClusters(context.Background(), regions)

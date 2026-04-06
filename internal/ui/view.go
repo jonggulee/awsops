@@ -280,7 +280,7 @@ func (m Model) currentDetailContent() string {
 	case m.selectedS3 != nil:
 		return renderS3Detail(m.selectedS3, m.s3Tags, m.spinner.View(), len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	case m.selectedElastiCache != nil:
-		return renderElastiCacheDetail(m.selectedElastiCache, m.buildSGNameMap(), len(m.detailHistory) > 0, m.profileToAccount, m.width)
+		return renderElastiCacheDetail(m.selectedElastiCache, m.buildSGNameMap(), m.elastiCacheSubnetIDs, m.buildSubnetNameMap(), m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {
