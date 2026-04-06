@@ -487,7 +487,7 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewS3
 	case "redis", "elasticache":
 		m.view = viewElastiCache
-	case "account":
+	case "profile", "account":
 		m.view = viewAccount
 	}
 	m.sortBy = sortNone

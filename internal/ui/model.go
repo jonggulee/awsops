@@ -189,7 +189,7 @@ var viewNames = map[viewType]string{
 	viewRDS:          "rds",
 	viewS3:           "s3",
 	viewElastiCache:  "elasticache",
-	viewAccount:      "account",
+	viewAccount:      "profile",
 }
 
 // --- sort ---
