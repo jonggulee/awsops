@@ -22,13 +22,22 @@ var (
 	nameTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // 이름 힌트: 연두색
 )
 
+// profileWithAccount renders a profile name with a dimmed account ID hint.
+func profileWithAccount(profile string, profileToAccount map[string]string) string {
+	id, ok := profileToAccount[profile]
+	if !ok || id == "" {
+		return profile
+	}
+	return profile + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render("["+id+"]")
+}
+
 // detailHintBar renders a styled hint bar (same visual as main hintBar) for detail screens.
 func detailHintBar(width int, items ...string) string {
 	content := strings.Join(items, hintBarStyle.Render("  "))
 	return "\n" + hintBarStyle.Width(width).Render(content)
 }
 
-func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool, typeSpecs map[string]awsclient.InstanceTypeSpec, width int) string {
+func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCursor int, hasHistory bool, typeSpecs map[string]awsclient.InstanceTypeSpec, profileToAccount map[string]string, width int) string {
 	if inst == nil {
 		return ""
 	}
@@ -39,7 +48,7 @@ func renderDetail(inst *awsclient.Instance, vpcName, subnetName string, detailCu
 
 	// General
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", inst.Profile))
+	b.WriteString(row("Profile", profileWithAccount(inst.Profile, profileToAccount)))
 	b.WriteString(row("Instance ID", inst.InstanceID))
 	b.WriteString(row("Name", orDash(inst.Name)))
 	b.WriteString(row("State", coloredState(inst.State)))
@@ -139,7 +148,7 @@ func nameOrID(inst *awsclient.Instance) string {
 	return inst.InstanceID
 }
 
-func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[string]string, enis []awsclient.ENI, width int) string {
+func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[string]string, enis []awsclient.ENI, profileToAccount map[string]string, width int) string {
 	if sg == nil {
 		return ""
 	}
@@ -149,7 +158,7 @@ func renderSGDetail(sg *awsclient.SecurityGroup, vpcName string, sgNames map[str
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("SG › %s", sg.Name)) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", sg.Profile))
+	b.WriteString(row("Profile", profileWithAccount(sg.Profile, profileToAccount)))
 	b.WriteString(row("Group ID", sg.GroupID))
 	b.WriteString(row("Name", sg.Name))
 	b.WriteString(row("Description", orDash(sg.Description)))
@@ -243,7 +252,7 @@ func renderENIs(enis []awsclient.ENI) string {
 	return b.String()
 }
 
-func renderVPCDetail(vpc *awsclient.VPC, width int) string {
+func renderVPCDetail(vpc *awsclient.VPC, profileToAccount map[string]string, width int) string {
 	if vpc == nil {
 		return ""
 	}
@@ -251,7 +260,7 @@ func renderVPCDetail(vpc *awsclient.VPC, width int) string {
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("VPC › %s", orDash(vpc.Name))) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", vpc.Profile))
+	b.WriteString(row("Profile", profileWithAccount(vpc.Profile, profileToAccount)))
 	b.WriteString(row("VPC ID", vpc.VpcID))
 	b.WriteString(row("Name", orDash(vpc.Name)))
 	b.WriteString(row("CIDR Block", vpc.CidrBlock))
@@ -266,7 +275,7 @@ func renderVPCDetail(vpc *awsclient.VPC, width int) string {
 	return b.String()
 }
 
-func renderSubnetDetail(subnet *awsclient.Subnet, width int) string {
+func renderSubnetDetail(subnet *awsclient.Subnet, profileToAccount map[string]string, width int) string {
 	if subnet == nil {
 		return ""
 	}
@@ -274,7 +283,7 @@ func renderSubnetDetail(subnet *awsclient.Subnet, width int) string {
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("Subnet › %s", orDash(subnet.Name))) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", subnet.Profile))
+	b.WriteString(row("Profile", profileWithAccount(subnet.Profile, profileToAccount)))
 	b.WriteString(row("Subnet ID", subnet.SubnetID))
 	b.WriteString(row("Name", orDash(subnet.Name)))
 	b.WriteString(row("VPC ID", subnet.VpcID))
@@ -291,7 +300,7 @@ func renderSubnetDetail(subnet *awsclient.Subnet, width int) string {
 	return b.String()
 }
 
-func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map[string]string, width int) string {
+func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map[string]string, profileToAccount map[string]string, width int) string {
 	if eni == nil {
 		return ""
 	}
@@ -304,7 +313,7 @@ func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map
 	b.WriteString(detailTitleStyle.Render("EC2  ›  Network Interfaces  ›  "+title) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile",    eni.Profile))
+	b.WriteString(row("Profile",    profileWithAccount(eni.Profile, profileToAccount)))
 	b.WriteString(row("ENI ID",     eni.ENIID))
 	if eni.Name != "" {
 		b.WriteString(row("Name", eni.Name))
@@ -336,7 +345,7 @@ func renderENIDetail(eni *awsclient.ENI, vpcName, subnetName string, sgNames map
 	return b.String()
 }
 
-func renderCertDetail(cert *awsclient.Certificate, width int) string {
+func renderCertDetail(cert *awsclient.Certificate, profileToAccount map[string]string, width int) string {
 	if cert == nil {
 		return ""
 	}
@@ -345,7 +354,7 @@ func renderCertDetail(cert *awsclient.Certificate, width int) string {
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("ACM › %s", cert.DomainName)) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", cert.Profile))
+	b.WriteString(row("Profile", profileWithAccount(cert.Profile, profileToAccount)))
 	b.WriteString(row("Domain Name", cert.DomainName))
 	b.WriteString(row("ARN", cert.ARN))
 	b.WriteString(row("Status", coloredCertStatus(cert.Status)))
@@ -445,6 +454,7 @@ func renderTGWAttDetail(
 	routes []awsclient.TGWRoute,
 	allAtts []awsclient.TGWAttachment,
 	accountToProfile map[string]string,
+	profileToAccount map[string]string,
 	termWidth int,
 ) string {
 	if att == nil {
@@ -462,7 +472,7 @@ func renderTGWAttDetail(
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("TGW › %s", att.AttachmentID)) + "\n")
 
 	b.WriteString(sectionStyle.Render("Attachment") + "\n")
-	b.WriteString(row("Profile", att.Profile))
+	b.WriteString(row("Profile", profileWithAccount(att.Profile, profileToAccount)))
 	b.WriteString(row("Attachment ID", att.AttachmentID))
 	b.WriteString(row("TGW ID", att.TgwID))
 	b.WriteString(row("TGW Owner", resolve(att.TgwOwnerID)))
@@ -582,7 +592,7 @@ func coloredState(state string) string {
 }
 
 
-func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool, width int) string {
+func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames map[string]string, sgNames map[string]string, detailCursor int, hasHistory bool, profileToAccount map[string]string, width int) string {
 	if cluster == nil {
 		return ""
 	}
@@ -593,7 +603,7 @@ func renderEKSDetail(cluster *awsclient.EKSCluster, vpcName string, subnetNames 
 
 	// General
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", cluster.Profile))
+	b.WriteString(row("Profile", profileWithAccount(cluster.Profile, profileToAccount)))
 	b.WriteString(row("Name", cluster.Name))
 	b.WriteString(row("Status", coloredEKSStatus(cluster.Status)))
 	b.WriteString(row("Version", cluster.Version))
@@ -782,7 +792,7 @@ func renderNodegroupBlock(ng awsclient.EKSNodegroup) string {
 	return b.String()
 }
 
-func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, listeners []awsclient.Listener, spinnerView string, detailCursor int, hasHistory bool, width int) string {
+func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[string]string, listeners []awsclient.Listener, spinnerView string, detailCursor int, hasHistory bool, profileToAccount map[string]string, width int) string {
 	if lb == nil {
 		return ""
 	}
@@ -791,7 +801,7 @@ func renderALBDetail(lb *awsclient.LoadBalancer, vpcName string, sgNames map[str
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("%s  ›  %s", lb.TypeShort(), lb.Name)) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", lb.Profile))
+	b.WriteString(row("Profile", profileWithAccount(lb.Profile, profileToAccount)))
 	b.WriteString(row("Name",    lb.Name))
 	b.WriteString(row("Type",    lb.TypeShort()))
 	b.WriteString(row("Scheme",  lb.Scheme))
@@ -1176,7 +1186,7 @@ func renderRoute53Detail(rec *awsclient.Route53Record, detailCursor int, aliasLi
 	return b.String()
 }
 
-func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, enis []awsclient.ENI, primaryENIID string, spinnerView string, detailCursor int, hasHistory bool, width int) string {
+func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[string]string, sgNames map[string]string, enis []awsclient.ENI, primaryENIID string, spinnerView string, detailCursor int, hasHistory bool, profileToAccount map[string]string, width int) string {
 	if db == nil {
 		return ""
 	}
@@ -1185,7 +1195,7 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	b.WriteString(detailTitleStyle.Render(fmt.Sprintf("RDS  ›  %s", db.DBInstanceID)) + "\n")
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile",     db.Profile))
+	b.WriteString(row("Profile",     profileWithAccount(db.Profile, profileToAccount)))
 	b.WriteString(row("Identifier",  db.DBInstanceID))
 	if db.Name != "" {
 		b.WriteString(row("Name", db.Name))
@@ -1272,11 +1282,11 @@ func renderRDSDetail(db *awsclient.DBInstance, vpcName string, subnetNames map[s
 	return b.String()
 }
 
-func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[string]string, hasHistory bool, width int) string {
+func renderElastiCacheDetail(ec *awsclient.ElastiCacheCluster, sgNameMap map[string]string, hasHistory bool, profileToAccount map[string]string, width int) string {
 	var b strings.Builder
 
 	b.WriteString(sectionStyle.Render("General") + "\n")
-	b.WriteString(row("Profile", ec.Profile))
+	b.WriteString(row("Profile", profileWithAccount(ec.Profile, profileToAccount)))
 	b.WriteString(row("ID", ec.ID))
 	b.WriteString(row("Engine", ec.Engine+" "+ec.EngineVersion))
 	b.WriteString(row("Node Type", ec.NodeType))
@@ -1326,11 +1336,11 @@ func coloredElastiCacheStatus(status string) string {
 	}
 }
 
-func renderS3Detail(b *awsclient.S3Bucket, tags map[string]string, spinnerView string, hasHistory bool, width int) string {
+func renderS3Detail(b *awsclient.S3Bucket, tags map[string]string, spinnerView string, hasHistory bool, profileToAccount map[string]string, width int) string {
 	var sb strings.Builder
 
 	sb.WriteString(sectionStyle.Render("General") + "\n")
-	sb.WriteString(row("Profile", b.Profile))
+	sb.WriteString(row("Profile", profileWithAccount(b.Profile, profileToAccount)))
 	sb.WriteString(row("Name", b.Name))
 	sb.WriteString(row("Region", orDash(b.Region)))
 	sb.WriteString(row("Created", b.CreationDateStr()))

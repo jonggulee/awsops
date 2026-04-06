@@ -29,6 +29,7 @@ var pickerResources = []resourceItem{
 	{"Records", "route53", "Route 53"},
 	{"Buckets", "s3", "Amazon S3"},
 	{"Redis OSS caches", "redis", "Amazon ElastiCache"},
+	{"Accounts", "account", "IAM"},
 }
 
 // viewBreadcrumb maps a view to its "Service > Resource" label for the crumb bar.
@@ -46,6 +47,7 @@ var viewBreadcrumb = map[viewType]string{
 	viewALB:          "EC2  ›  Load Balancers",
 	viewS3:           "Amazon S3  ›  Buckets",
 	viewElastiCache:  "Amazon ElastiCache  ›  Redis OSS caches",
+	viewAccount:      "IAM  ›  Accounts",
 }
 
 var (

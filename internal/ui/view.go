@@ -251,15 +251,15 @@ func (m Model) currentDetailContent() string {
 	switch {
 	case m.selectedSG != nil:
 		enis := m.enisForSG(m.selectedSG.GroupID)
-		return renderSGDetail(m.selectedSG, m.lookupVPCName(m.selectedSG.VpcID), m.buildSGNameMap(), enis, m.width)
+		return renderSGDetail(m.selectedSG, m.lookupVPCName(m.selectedSG.VpcID), m.buildSGNameMap(), enis, m.profileToAccount, m.width)
 	case m.selectedVPC != nil:
-		return renderVPCDetail(m.selectedVPC, m.width)
+		return renderVPCDetail(m.selectedVPC, m.profileToAccount, m.width)
 	case m.selectedSubnet != nil:
-		return renderSubnetDetail(m.selectedSubnet, m.width)
+		return renderSubnetDetail(m.selectedSubnet, m.profileToAccount, m.width)
 	case m.selectedTGWAtt != nil:
-		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.width)
+		return renderTGWAttDetail(m.selectedTGWAtt, m.tgwAssociations, m.tgwRoutes, m.tgwAttachments, m.accountToProfile, m.profileToAccount, m.width)
 	case m.selectedCert != nil:
-		return renderCertDetail(m.selectedCert, m.width)
+		return renderCertDetail(m.selectedCert, m.profileToAccount, m.width)
 	case m.selectedRoute53 != nil:
 		aliasLinked := m.selectedRoute53.AliasTarget != "" && m.lookupALBByDNS(m.selectedRoute53.AliasTarget) != nil
 		return renderRoute53Detail(m.selectedRoute53, m.detailCursor, aliasLinked, m.width)
@@ -270,24 +270,24 @@ func (m Model) currentDetailContent() string {
 	case m.selectedListener != nil:
 		return renderListenerDetail(m.selectedListener, m.listenerRules, m.spinner.View(), m.buildTGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.width)
 	case m.selectedALB != nil:
-		return renderALBDetail(m.selectedALB, m.lookupVPCName(m.selectedALB.VpcID), m.buildSGNameMap(), m.albListeners, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.width)
+		return renderALBDetail(m.selectedALB, m.lookupVPCName(m.selectedALB.VpcID), m.buildSGNameMap(), m.albListeners, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	case m.selectedENI != nil:
-		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap(), m.width)
+		return renderENIDetail(m.selectedENI, m.lookupVPCName(m.selectedENI.VpcID), m.lookupSubnetName(m.selectedENI.SubnetID), m.buildSGNameMap(), m.profileToAccount, m.width)
 	case m.selectedEKS != nil:
-		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.width)
+		return renderEKSDetail(m.selectedEKS, m.lookupVPCName(m.selectedEKS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.detailCursor, len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	case m.selectedRDS != nil:
-		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.rdsENIs, m.rdsENIPrimaryID, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.width)
+		return renderRDSDetail(m.selectedRDS, m.lookupVPCName(m.selectedRDS.VpcID), m.buildSubnetNameMap(), m.buildSGNameMap(), m.rdsENIs, m.rdsENIPrimaryID, m.spinner.View(), m.detailCursor, len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	case m.selectedS3 != nil:
-		return renderS3Detail(m.selectedS3, m.s3Tags, m.spinner.View(), len(m.detailHistory) > 0, m.width)
+		return renderS3Detail(m.selectedS3, m.s3Tags, m.spinner.View(), len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	case m.selectedElastiCache != nil:
-		return renderElastiCacheDetail(m.selectedElastiCache, m.buildSGNameMap(), len(m.detailHistory) > 0, m.width)
+		return renderElastiCacheDetail(m.selectedElastiCache, m.buildSGNameMap(), len(m.detailHistory) > 0, m.profileToAccount, m.width)
 	default:
 		var vpcName, subnetName string
 		if m.selectedInst != nil {
 			vpcName = m.lookupVPCName(m.selectedInst.VpcID)
 			subnetName = m.lookupSubnetName(m.selectedInst.SubnetID)
 		}
-		return renderDetail(m.selectedInst, vpcName, subnetName, m.detailCursor, len(m.detailHistory) > 0, m.instanceTypeSpecs, m.width)
+		return renderDetail(m.selectedInst, vpcName, subnetName, m.detailCursor, len(m.detailHistory) > 0, m.instanceTypeSpecs, m.profileToAccount, m.width)
 	}
 }
 

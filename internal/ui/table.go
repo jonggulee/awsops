@@ -487,6 +487,8 @@ func (m *Model) applyCommand(cmd string) {
 		m.view = viewS3
 	case "redis", "elasticache":
 		m.view = viewElastiCache
+	case "account":
+		m.view = viewAccount
 	}
 	m.sortBy = sortNone
 	m.filters = nil
@@ -533,6 +535,9 @@ func (m *Model) buildCurrentTable() table.Model {
 	case viewElastiCache:
 		m.displayedElastiCache = filterElastiCacheData(m.sortedElastiCache(), m.filters, selectedRegionIDs(m.regions))
 		return buildElastiCacheTable(rowsSliced(elastiCacheRows(m.displayedElastiCache), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
+	case viewAccount:
+		rows := accountRows(m.profileToAccount)
+		return buildAccountTable(rows, m.height)
 	default:
 		m.displayedInstances = filterEC2Data(m.sortedInstances(), m.filters)
 		return buildEC2Table(rowsSliced(ec2Rows(m.displayedInstances), m.colOffset), m.height, m.maxProfileWidth(), m.sortBy, m.sortAsc, m.colOffset)
@@ -584,6 +589,8 @@ func (m *Model) maxColOffset() int {
 		return 5
 	case viewElastiCache:
 		return 7
+	case viewAccount:
+		return 0
 	}
 	return 0
 }
@@ -1335,4 +1342,28 @@ func (m *Model) selectedALB_() *awsclient.LoadBalancer {
 	}
 	lb := m.displayedALBs[cursor]
 	return &lb
+}
+
+// --- Account table ---
+
+func buildAccountTable(rows []table.Row, height int) table.Model {
+	cols := []table.Column{
+		{Title: "Profile", Width: 24},
+		{Title: "Account ID", Width: 14},
+	}
+	return newTable(cols, rows, height)
+}
+
+func accountRows(profileToAccount map[string]string) []table.Row {
+	type entry struct{ profile, accountID string }
+	entries := make([]entry, 0, len(profileToAccount))
+	for p, id := range profileToAccount {
+		entries = append(entries, entry{p, id})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].profile < entries[j].profile })
+	rows := make([]table.Row, len(entries))
+	for i, e := range entries {
+		rows[i] = table.Row{e.profile, e.accountID}
+	}
+	return rows
 }

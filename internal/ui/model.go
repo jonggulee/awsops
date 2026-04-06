@@ -161,6 +161,7 @@ const (
 	viewRDS
 	viewS3
 	viewElastiCache
+	viewAccount
 )
 
 type screen int
@@ -188,6 +189,7 @@ var viewNames = map[viewType]string{
 	viewRDS:          "rds",
 	viewS3:           "s3",
 	viewElastiCache:  "elasticache",
+	viewAccount:      "account",
 }
 
 // --- sort ---
